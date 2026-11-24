@@ -105,6 +105,8 @@ def _final_inputs(metric: str, case: Case, y_true, y_pred, num_classes: int | No
 def backend_opts(case: Case, name: str, detector_opts: dict | None = None) -> dict:
     """User settings for this library, then detector alignment on top (None removes a key)."""
     opts = case.settings.for_backend(name)
+    if case.task == "regression" and case.y_true.ndim == 2:
+        opts["multi_output"] = True
     for k, v in (detector_opts or {}).items():
         if v is None:
             opts.pop(k, None)
@@ -142,8 +144,11 @@ def _run(bks, metric, case, detectors: tuple[Detector, ...] = ()) -> dict[str, R
             out[b.name] = Result(None, skipped=reason)
             continue
         n_classes = opts.pop("num_classes", case.num_classes)
+        digits = opts.pop("round_digits", None)
         yt, yp = _final_inputs(metric, case, y_true, y_pred, n_classes)
         value, err = _backends.safe_compute(b, metric, case.task, yt, yp, n_classes, opts)
+        if value is not None and digits is not None:
+            value = round(value, digits)
         out[b.name] = Result(value, err)
     return out
 

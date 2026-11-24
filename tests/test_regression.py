@@ -19,7 +19,10 @@ def keys(r):
 
 @pytest.mark.parametrize("metric", ["r2", "mae", "mse", "rmse"])
 def test_clean_regression_agrees(metric):
-    r = compare(metric, Y, P)
+    # evaluate rounds R2 to 3 decimals; it has its own tests.
+    from metric_diff.backends import resolve
+
+    r = compare(metric, Y, P, backends=[b.name for b in resolve(None) if b.name != "evaluate"])
     assert r.agree, str(r)
 
 

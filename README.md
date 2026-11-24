@@ -2,7 +2,7 @@
 
 **Your F1 score is 0.75 in torchmetrics, 0.70 in torcheval, a vector in Keras and an error in sklearn. Which one is right, and why?**
 
-`metric-diff` computes the same metric with **scikit-learn**, **torchmetrics**, **torcheval** and **Keras 3**. When they disagree, it finds the setting that causes it, **re-runs every library with that setting aligned to confirm**, and tells you how to fix your code.
+`metric-diff` computes the same metric with **scikit-learn**, **torchmetrics**, **torcheval**, **Keras 3** and **Hugging Face evaluate**. When they disagree, it finds the setting that causes it, **re-runs every library with that setting aligned to confirm**, and tells you how to fix your code.
 
 It also answers the other classic question: **is the number I logged per batch the number for my dataset?**
 
@@ -39,8 +39,12 @@ Metric libraries look interchangeable but make different silent choices. Develop
 ```bash
 pip install metric-diff            # sklearn only (reference)
 pip install "metric-diff[torch]"   # + torchmetrics and torcheval
-pip install "metric-diff[all]"     # + Keras 3
+pip install "metric-diff[keras]"   # + Keras 3
+pip install "metric-diff[evaluate]"  # + Hugging Face evaluate
+pip install "metric-diff[all]"     # everything
 ```
+
+Hugging Face `evaluate` downloads each metric script from the Hugging Face Hub the first time it is used (cached afterwards), so that backend needs internet access once.
 
 Keras runs on whichever backend you have. If TensorFlow isn't installed and you haven't set `KERAS_BACKEND`, metric-diff uses the torch backend.
 
@@ -159,13 +163,16 @@ Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so 
 | Per-batch averaging, padding, dropped samples | see `compare_batched` above |
 | **Regression:** Keras MAPE is a percentage | 28.0 in Keras vs 0.28 in sklearn and torchmetrics |
 | **Regression:** MAPE with zero targets | each library divides by a different tiny epsilon: 7.5e14 vs 142,450 vs 1.7e8 |
-| **Regression:** R2 with a constant target | torcheval returns -inf (NaN if perfect); others return 0.0 (1.0) |
+| **Regression:** R2 with a constant target | torcheval and evaluate return -inf (torcheval NaN if perfect); others return 0.0 (1.0) |
+| **evaluate** `r_squared` rounds to 3 decimals | 0.959 vs 0.9595 |
 | **Regression:** float32 rounding on large values | R2 of 1.0000001 instead of 0.989 when values are about 1e6 (torchmetrics#3077) |
 
 Metrics:
 
 - **Classification** (binary and multiclass): `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`
-- **Regression** (single or multi-output): `r2`, `mae`, `mse`, `rmse`, `mape` (torcheval only has `r2` and `mse`)
+- **Regression** (single or multi-output): `r2`, `mae`, `mse`, `rmse`, `mape` (torcheval only has `r2` and `mse`; evaluate is single-output only)
+
+evaluate has no average precision, `zero_division` or top-k; those cases show it as skipped.
 
 **How a cause is confirmed:** each detector knows how to align one setting (for example pass `average="macro"` everywhere, or apply softmax first). metric-diff re-runs all libraries with the alignment and only says *confirmed* if they then agree. If nothing reproduces agreement, it says so: that is often a new bug worth reporting.
 
@@ -173,12 +180,11 @@ Metrics:
 
 - Settings supported: `average` (micro / macro / weighted), `threshold`, `pos_label`, `num_classes`, `zero_division`, `top_k` (accuracy). Not yet: `ignore_index` (masking the samples gives the same result in every library), sample weights, per-class output (`average=None`).
 - No multilabel, sample weights or per-class output yet. Regression has no settings yet (e.g. `multioutput`).
-- Explanations describe the library versions tested (sklearn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15). Tests check the key defaults so they fail loudly when a library changes.
+- Explanations describe the library versions tested (sklearn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15, evaluate 0.4.6). Tests check the key defaults so they fail loudly when a library changes.
 
 ## Roadmap
 
 - More settings: sample weights, per-class output
-- Hugging Face `evaluate` backend
 - Multilabel classification; regression settings (`multioutput`, sample weights)
 - Segmentation (Dice / IoU) and detection mAP
 - pytest plugin

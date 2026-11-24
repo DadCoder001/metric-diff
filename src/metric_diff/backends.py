@@ -62,6 +62,14 @@ DEFAULT_AVERAGE: dict[str, dict[str, str]] = {
         "auroc": "AUC() flattens all classes into one binary problem (micro), using 200 thresholds",
         "average_precision": "AUC(curve='PR') flattens all classes into one binary problem",
     },
+    "evaluate": {
+        "accuracy": "micro (wraps sklearn accuracy_score)",
+        "precision": "'binary' (wraps sklearn; raises an error on multiclass data)",
+        "recall": "'binary' (wraps sklearn; raises an error on multiclass data)",
+        "f1": "'binary' (wraps sklearn; raises an error on multiclass data)",
+        "auroc": "needs evaluate.load('roc_auc', 'multiclass') and multi_class='ovr'",
+        "average_precision": "no such metric",
+    },
 }
 
 _ALL3 = {"micro", "macro", "weighted"}
@@ -75,6 +83,8 @@ SUPPORTED_AVERAGES: dict[str, dict[str, set[str]]] = {
                   "auroc": {"macro"}, "average_precision": {"macro"}},
     "keras": {"accuracy": {"micro"}, "precision": {"micro", "macro"}, "recall": {"micro", "macro"},
               "f1": _ALL3, "auroc": {"macro"}, "average_precision": {"macro"}},
+    "evaluate": {"accuracy": {"micro"}, "precision": _ALL3, "recall": _ALL3, "f1": _ALL3,
+                 "auroc": _ALL3},
 }
 
 _TORCH_NAMES = {
@@ -471,11 +481,120 @@ class KerasBackend(Backend):
         return _always_zero_division("keras", metric, opts)
 
 
+_EVALUATE_NAMES = {"accuracy": "accuracy", "precision": "precision", "recall": "recall", "f1": "f1",
+                   "auroc": "roc_auc", "r2": "r_squared", "mae": "mae", "mse": "mse", "rmse": "mse",
+                   "mape": "mape"}
+_EVALUATE_CACHE: dict[tuple, object] = {}
+
+
+def _load_evaluate(name: str, config: str | None = None):
+    """evaluate.load() fetches the metric script from the Hugging Face Hub (cached after the
+    first time) and takes ~2 s even when cached, so keep loaded metrics for the process."""
+    key = (name, config)
+    if key not in _EVALUATE_CACHE:
+        import evaluate
+
+        try:
+            evaluate.logging.disable_progress_bar()
+        except Exception:  # pragma: no cover - older versions
+            pass
+        try:
+            _EVALUATE_CACHE[key] = evaluate.load(name, config) if config else evaluate.load(name)
+        except Exception as exc:
+            raise RuntimeError(f"could not load evaluate metric {name!r} (it is downloaded from the "
+                               f"Hugging Face Hub the first time): {exc}") from None
+    return _EVALUATE_CACHE[key]
+
+
+class _EvaluateStateful:
+    """evaluate metrics accumulate with add_batch() and finish with compute()."""
+
+    def __init__(self, backend, metric, task, num_classes, opts):
+        self.backend, self.metric, self.task = backend, metric, task
+        self.num_classes, self.opts = num_classes, opts
+        self.module, self.kwargs, self.key = backend._module(metric, task, opts)
+
+    def update(self, y_true, y_pred):
+        refs, preds = self.backend._inputs(self.metric, self.task, y_true, y_pred, self.opts)
+        self.module.add_batch(references=refs, **{self.key: preds})
+
+    def compute(self) -> float:
+        out = self.module.compute(**self.kwargs)
+        return self.backend._value(self.metric, out)
+
+
+class EvaluateBackend(Backend):
+    """Hugging Face `evaluate`. Most of its metrics wrap scikit-learn, with their own input
+    handling (float32 / int32 features) and some own implementations (r_squared)."""
+
+    name = "evaluate"
+    module = "evaluate"
+
+    def unsupported(self, metric, task, opts):
+        if metric == "average_precision":
+            return "evaluate has no average precision metric"
+        if task == "regression" and opts.get("multi_output"):
+            return "metric-diff does not map evaluate multi-output regression yet"
+        if opts.get("top_k"):
+            return "evaluate has no top-k accuracy"
+        return _always_zero_division("evaluate", metric, opts)
+
+    def _module(self, metric, task, opts):
+        """(loaded metric, compute kwargs, name of the predictions argument)"""
+        kwargs = {}
+        if metric == "auroc":
+            module = _load_evaluate("roc_auc", "multiclass" if task == "multiclass" else None)
+            if task == "multiclass":
+                kwargs["multi_class"] = opts.get("multi_class", "raise")
+                if opts.get("average"):
+                    kwargs["average"] = opts["average"]
+            return module, kwargs, "prediction_scores"
+        module = _load_evaluate(_EVALUATE_NAMES[metric])
+        if metric == "rmse":
+            kwargs["squared"] = False
+        if metric in ("precision", "recall", "f1"):
+            if opts.get("average"):
+                kwargs["average"] = opts["average"]
+            if task == "multiclass" and opts.get("explicit_classes"):
+                kwargs["labels"] = list(range(opts["num_classes_for_labels"]))
+        if metric == "accuracy" and opts.get("average") not in (None, "micro"):
+            raise ValueError(f"evaluate accuracy has no average={opts['average']!r}")
+        return module, kwargs, "predictions"
+
+    def _inputs(self, metric, task, y_true, y_pred, opts):
+        if task == "regression":
+            return y_true.tolist(), y_pred.tolist()
+        if metric in LABEL_METRICS and y_pred.dtype.kind == "f":
+            if y_pred.ndim == 1:
+                y_pred = (y_pred >= opts.get("threshold", 0.5)).astype(np.int64)
+            else:
+                y_pred = y_pred.argmax(axis=1)
+        return y_true.tolist(), y_pred.tolist()
+
+    def _value(self, metric, out) -> float:
+        if isinstance(out, dict):
+            out = next(iter(out.values()))
+        return float(out)
+
+    def compute(self, metric, task, y_true, y_pred, num_classes, opts):
+        opts = {**opts, "num_classes_for_labels": num_classes}
+        module, kwargs, key = self._module(metric, task, opts)
+        refs, preds = self._inputs(metric, task, y_true, y_pred, opts)
+        value = self._value(metric, module.compute(references=refs, **{key: preds}, **kwargs))
+        if metric == "r2" and opts.get("r2_force_finite"):
+            value = _r2_force_finite(value, y_true, y_pred)
+        return value
+
+    def stateful(self, metric, task, num_classes, opts):
+        return _EvaluateStateful(self, metric, task, num_classes, {**opts, "num_classes_for_labels": num_classes})
+
+
 ALL_BACKENDS: dict[str, Callable[[], Backend]] = {
     "sklearn": SklearnBackend,
     "torchmetrics": TorchmetricsBackend,
     "torcheval": TorchevalBackend,
     "keras": KerasBackend,
+    "evaluate": EvaluateBackend,
 }
 
 
@@ -489,7 +608,7 @@ def resolve(names: list[str] | None) -> list[Backend]:
             raise ValueError(f"unknown backend {n!r}; choose from {', '.join(ALL_BACKENDS)}")
         b = ALL_BACKENDS[n]()
         if not b.available():
-            extra = "keras" if n == "keras" else "torch"
+            extra = n if n in ("keras", "evaluate") else "torch"
             raise ImportError(f"backend {n!r} is not installed (pip install 'metric-diff[{extra}]')")
         out.append(b)
     return out

@@ -429,21 +429,37 @@ class MapeZeroTarget(Detector):
 class R2ConstantTarget(Detector):
     key = "r2_constant_target"
     title = "R2 with a constant target"
-    requires = "torcheval"
     opts = {"r2_force_finite": True}
 
     def relevant(self, case, metric):
-        if metric != "r2":
+        if metric != "r2" or not ({"torcheval", "evaluate"} & set(case.backends)):
             return False
         yt = case.y_true if case.y_true.ndim == 2 else case.y_true[:, None]
         return bool(np.any(yt.max(axis=0) == yt.min(axis=0)))
 
     def explain(self, case, metric, backends):
-        detail = ("y_true has zero variance, so R2 = 1 - SSE / 0. torcheval returns -inf (or NaN for "
-                  "a perfect prediction); sklearn (force_finite=True), torchmetrics and Keras return "
-                  "0.0 (1.0 if perfect).")
+        inf_libs = " and ".join(b for b in ("torcheval", "evaluate") if b in backends)
+        detail = (f"y_true has zero variance, so R2 = 1 - SSE / 0. {inf_libs} return(s) -inf (torcheval "
+                  "returns NaN for a perfect prediction); sklearn (force_finite=True), torchmetrics "
+                  "and Keras return 0.0 (1.0 if perfect).")
         fix = ("R2 is not meaningful for a constant target: report MSE/MAE instead, or evaluate on a "
                "split where the target varies.")
+        return detail, fix
+
+
+class EvaluateR2Rounding(Detector):
+    key = "evaluate_r2_rounding"
+    title = "evaluate rounds R2 to 3 decimals"
+    requires = "evaluate"
+    opts = {"round_digits": 3}
+
+    def relevant(self, case, metric):
+        return metric == "r2"
+
+    def explain(self, case, metric, backends):
+        detail = ("evaluate's r_squared metric rounds its result to 3 decimal places (e.g. 0.959 "
+                  "instead of 0.9595); the other libraries return full precision.")
+        fix = "Use sklearn.metrics.r2_score when you need more than 3 decimals."
         return detail, fix
 
 
@@ -466,8 +482,9 @@ class Float32Precision(Detector):
         return y_true - c, y_pred - c
 
     def explain(self, case, metric, backends):
+        f32 = [b for b in backends if b != "sklearn"]
         detail = (f"The values are large compared with their spread (max |y| is about {self._ratio(case):.0f}x "
-                  "the spread). torchmetrics, torcheval and Keras compute in float32, which keeps about "
+                  f"the spread). {', '.join(f32)} compute in float32, which keeps about "
                   "7 significant digits, so the small differences that decide the metric are lost to "
                   "rounding. sklearn computes in float64.")
         fix = ("Compute in float64 (tensor.double() / dtype='float64'), or subtract a constant such as "
@@ -608,6 +625,7 @@ DETECTORS: list[Detector] = [
     MapeZeroTarget(),
     MapePercent(),
     R2ConstantTarget(),
+    EvaluateR2Rounding(),
     Float32Precision(),
     ZeroDivisionMismatch(),
     TopKTies(),
