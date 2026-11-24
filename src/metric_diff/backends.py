@@ -64,6 +64,19 @@ DEFAULT_AVERAGE: dict[str, dict[str, str]] = {
     },
 }
 
+_ALL3 = {"micro", "macro", "weighted"}
+# Which `average` values each library accepts for multiclass data (checked by a test).
+SUPPORTED_AVERAGES: dict[str, dict[str, set[str]]] = {
+    "sklearn": {"accuracy": {"micro", "macro"}, "precision": _ALL3, "recall": _ALL3, "f1": _ALL3,
+                "auroc": _ALL3, "average_precision": _ALL3},
+    "torchmetrics": {"accuracy": _ALL3, "precision": _ALL3, "recall": _ALL3, "f1": _ALL3,
+                     "auroc": {"macro", "weighted"}, "average_precision": {"macro", "weighted"}},
+    "torcheval": {"accuracy": {"micro", "macro"}, "precision": _ALL3, "recall": _ALL3, "f1": _ALL3,
+                  "auroc": {"macro"}, "average_precision": {"macro"}},
+    "keras": {"accuracy": {"micro"}, "precision": {"micro", "macro"}, "recall": {"micro", "macro"},
+              "f1": _ALL3, "auroc": {"macro"}, "average_precision": {"macro"}},
+}
+
 _TORCH_NAMES = {
     "accuracy": "Accuracy", "precision": "Precision", "recall": "Recall",
     "f1": "F1Score", "auroc": "AUROC",
@@ -124,6 +137,8 @@ class SklearnBackend(Backend):
             fn = {"precision": skm.precision_score, "recall": skm.recall_score,
                   "f1": skm.f1_score}[metric]
             kw = {"average": avg} if avg else {}
+            if task == "multiclass" and opts.get("explicit_classes"):
+                kw["labels"] = list(range(num_classes))  # how sklearn users say "there are C classes"
             return float(fn(y_true, y_pred, zero_division=0, **kw))
 
         if metric == "auroc":

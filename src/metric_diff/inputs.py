@@ -2,9 +2,78 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
+
+SETTING_KEYS = ("average", "threshold")
+AVERAGES = ("micro", "macro", "weighted")
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Settings the user called the libraries with.
+
+    ``common`` applies to every library; ``per_library`` overrides it for one library,
+    e.g. ``{"sklearn": {"average": "weighted"}}``. Keys: ``average``, ``threshold``.
+    ``explicit_classes`` is set when the user passed ``num_classes``.
+    """
+
+    common: dict = field(default_factory=dict)
+    per_library: dict = field(default_factory=dict)
+    explicit_classes: bool = False
+
+    def for_backend(self, name: str) -> dict:
+        opts = {**self.common, **self.per_library.get(name, {})}
+        if self.explicit_classes:
+            opts["explicit_classes"] = True
+        return opts
+
+    def value(self, name: str, key: str, default=None):
+        return self.for_backend(name).get(key, default)
+
+    @property
+    def empty(self) -> bool:
+        return not (self.common or self.per_library or self.explicit_classes)
+
+    def describe(self) -> str:
+        parts = [", ".join(f"{k}={v!r}" for k, v in self.common.items())] if self.common else []
+        for lib, s in self.per_library.items():
+            parts.append(f"{lib}: " + ", ".join(f"{k}={v!r}" for k, v in s.items()))
+        return "; ".join(parts)
+
+
+def make_settings(average=None, threshold=None, settings=None, explicit_classes=False) -> Settings:
+    common = {}
+    if average is not None:
+        common["average"] = _check_average(average)
+    if threshold is not None:
+        common["threshold"] = _check_threshold(threshold)
+    per = {}
+    for lib, kw in (settings or {}).items():
+        unknown = set(kw) - set(SETTING_KEYS)
+        if unknown:
+            raise ValueError(f"unknown setting(s) {sorted(unknown)} for {lib}; supported: {', '.join(SETTING_KEYS)}")
+        checked = {}
+        if kw.get("average") is not None:
+            checked["average"] = _check_average(kw["average"])
+        if kw.get("threshold") is not None:
+            checked["threshold"] = _check_threshold(kw["threshold"])
+        per[lib] = checked
+    return Settings(common, per, explicit_classes)
+
+
+def _check_average(a):
+    if a not in AVERAGES:
+        raise ValueError(f"average must be one of {', '.join(AVERAGES)} (got {a!r})")
+    return a
+
+
+def _check_threshold(t):
+    t = float(t)
+    if not 0.0 < t < 1.0:
+        raise ValueError(f"threshold must be between 0 and 1 (got {t})")
+    return t
 
 METRICS = ("accuracy", "precision", "recall", "f1", "auroc", "average_precision")
 LABEL_METRICS = ("accuracy", "precision", "recall", "f1")
@@ -52,6 +121,8 @@ class Case:
     task: str  # "binary" | "multiclass"
     num_classes: int
     pred_kind: str  # "labels" | "probs" | "logits"
+    settings: Settings = field(default_factory=Settings)
+    backends: tuple = ()  # names of the libraries being compared
 
     @property
     def n_samples(self) -> int:
@@ -67,9 +138,43 @@ class Case:
         return f"{task}, {self.n_samples} samples, predictions look like {kinds[self.pred_kind]}"
 
 
-def prepare(y_true, y_pred) -> Case:
+def apply_pos_label(y_true: np.ndarray, y_pred: np.ndarray, pos_label):
+    """Map a binary problem to {0, 1} with ``pos_label`` as the positive class."""
+    labels = np.unique(y_true)
+    if len(labels) > 2:
+        raise ValueError(f"pos_label is for binary data, but y_true has {len(labels)} classes")
+    y_true = (y_true == pos_label).astype(np.int64)
+    if y_pred.ndim == 1 and _is_integer_valued(y_pred):
+        y_pred = (y_pred == pos_label).astype(np.int64)
+    return y_true, y_pred
+
+
+def prepare(y_true, y_pred, *, pos_label=None, num_classes=None) -> Case:
     yt = to_numpy(y_true)
     yp = to_numpy(y_pred)
+    if pos_label is not None:
+        if yt.ndim == 2 and yt.shape[1] == 1:
+            yt = yt[:, 0]
+        if yp.ndim == 2 and yp.shape[1] == 1:
+            yp = yp[:, 0]
+        yt, yp = apply_pos_label(yt, yp, pos_label)
+    case = _prepare(yt, yp)
+    if num_classes is not None:
+        num_classes = int(num_classes)
+        if case.task == "binary" and num_classes != 2:
+            if num_classes < 2 or case.pred_kind != "labels":
+                raise ValueError(f"num_classes={num_classes} does not fit binary inputs")
+            case = Case(case.y_true, case.y_pred, "multiclass", num_classes, "labels")
+        elif case.task == "multiclass":
+            if case.y_pred.ndim == 2 and num_classes != case.num_classes:
+                raise ValueError(f"num_classes={num_classes} but y_pred has {case.num_classes} columns")
+            if num_classes < case.num_classes:
+                raise ValueError(f"num_classes={num_classes} but the data contains label {case.num_classes - 1}")
+            case = Case(case.y_true, case.y_pred, "multiclass", num_classes, case.pred_kind)
+    return case
+
+
+def _prepare(yt: np.ndarray, yp: np.ndarray) -> Case:
 
     if yt.ndim == 2 and yt.shape[1] == 1:
         yt = yt[:, 0]

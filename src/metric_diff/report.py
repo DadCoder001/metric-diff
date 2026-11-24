@@ -10,6 +10,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 def _val(r: "Result") -> str:
+    if r.skipped:
+        return "skipped"
     return f"{r.value:.4f}" if r.ok else f"error: {r.error}"
 
 
@@ -18,12 +20,19 @@ def _wrap(text: str, indent: str) -> str:
 
 
 def render(report: "Report") -> str:
-    lines = [f"metric-diff: {report.metric} ({report.case.describe()})", ""]
+    lines = [f"metric-diff: {report.metric} ({report.case.describe()})"]
+    if not report.case.settings.empty:
+        s = report.case.settings
+        desc = s.describe()
+        if s.explicit_classes:
+            desc = (desc + "; " if desc else "") + f"num_classes={report.case.num_classes}"
+        lines.append(f"your settings: {desc}")
+    lines.append("")
     width = max(len(n) for n in report.results) + 2
     values = [r.value for r in report.results.values() if r.ok]
     for name, r in report.results.items():
         mark = ""
-        if report.status == "mismatch" and (not r.ok or _is_outlier(r.value, values)):
+        if report.status == "mismatch" and r.skipped is None and (not r.ok or _is_outlier(r.value, values)):
             mark = "  <-"
         version = report.versions.get(name, "")
         lines.append(f"  {name:<{width}} {_val(r):<10} ({version}){mark}")
@@ -51,7 +60,7 @@ def render(report: "Report") -> str:
             lines.append(f"     see: {c.reference}")
 
     if report.confirmed:
-        vals = sorted({f"{r.value:.4f}" for r in report.aligned.values()})
+        vals = sorted({f"{r.value:.4f}" for r in report.aligned.values() if r.ok})
         lines.append("")
         lines.append(f"  confirmed: after aligning these settings, every library reports {vals[0]}")
     elif report.status == "mismatch":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from itertools import combinations
 
@@ -9,17 +10,18 @@ import numpy as np
 
 from . import backends as _backends
 from .detectors import DETECTORS, Detector, notes_for
-from .inputs import LABEL_METRICS, Case, normalise_metric, prepare
+from .inputs import LABEL_METRICS, Case, make_settings, normalise_metric, prepare
 
 
 @dataclass
 class Result:
     value: float | None
     error: str | None = None
+    skipped: str | None = None  # the library can't do what was asked (e.g. an unsupported average)
 
     @property
     def ok(self) -> bool:
-        return self.error is None
+        return self.error is None and self.skipped is None
 
 
 @dataclass
@@ -49,14 +51,17 @@ class Report:
 
     def to_dict(self) -> dict:
         def res(d):
-            return {k: {"value": r.value, "error": r.error} for k, r in d.items()}
+            return {k: {"value": r.value, "error": r.error, "skipped": r.skipped} for k, r in d.items()}
 
+        s = self.case.settings
         return {
             "metric": self.metric,
             "task": self.case.task,
             "num_classes": self.case.num_classes,
             "n_samples": self.case.n_samples,
             "pred_kind": self.case.pred_kind,
+            "settings": {"common": s.common, "per_library": s.per_library,
+                         "explicit_num_classes": s.explicit_classes},
             "versions": self.versions,
             "status": self.status,
             "results": res(self.results),
@@ -78,38 +83,80 @@ def _close(values: list[float], rtol: float, atol: float) -> bool:
 
 
 def _status(results: dict[str, Result], rtol: float, atol: float) -> str:
-    if len(results) < 2:
+    active = [r for r in results.values() if r.skipped is None]
+    if len(active) < 2:
         return "single"
-    if not all(r.ok for r in results.values()):
+    if not all(r.ok for r in active):
         return "mismatch"
-    return "agree" if _close([r.value for r in results.values()], rtol, atol) else "mismatch"
+    return "agree" if _close([r.value for r in active], rtol, atol) else "mismatch"
 
 
-def _final_inputs(metric: str, case: Case, y_true, y_pred):
+def _final_inputs(metric: str, case: Case, y_true, y_pred, num_classes: int | None = None):
     """Shape conversions every library needs (not a 'cause', just plumbing)."""
     if metric not in LABEL_METRICS:
         if case.task == "multiclass" and y_pred.ndim == 1:
-            y_pred = np.eye(case.num_classes, dtype=np.float64)[y_pred]
+            y_pred = np.eye(num_classes or case.num_classes, dtype=np.float64)[y_pred]
         else:
             y_pred = y_pred.astype(np.float64)
     return y_true, y_pred
 
 
+def backend_opts(case: Case, name: str, detector_opts: dict | None = None) -> dict:
+    """User settings for this library, then detector alignment on top (None removes a key)."""
+    opts = case.settings.for_backend(name)
+    for k, v in (detector_opts or {}).items():
+        if v is None:
+            opts.pop(k, None)
+        else:
+            opts[k] = v
+    return opts
+
+
+def unsupported(case: Case, metric: str, name: str, opts: dict) -> str | None:
+    """Reason this library can't honour the user's own `average`, or None."""
+    avg = opts.get("average")
+    if case.task != "multiclass" or avg is None or avg != case.settings.value(name, "average"):
+        return None
+    supported = _backends.SUPPORTED_AVERAGES.get(name, {}).get(metric)
+    if supported is not None and avg not in supported:
+        return f"no average={avg!r} for {metric} (supports {', '.join(sorted(supported))})"
+    return None
+
+
 def _run(bks, metric, case, detectors: tuple[Detector, ...] = ()) -> dict[str, Result]:
     y_true, y_pred = case.y_true, case.y_pred
-    opts: dict = {}
+    det_opts: dict = {}
     for d in detectors:
         y_true, y_pred = d.transform(y_true, y_pred, case)
-        opts.update(d.options(case, metric))
-    y_true, y_pred = _final_inputs(metric, case, y_true, y_pred)
+        det_opts.update(d.options(case, metric))
     out = {}
     for b in bks:
-        value, err = _backends.safe_compute(b, metric, case.task, y_true, y_pred, case.num_classes, opts)
+        opts = backend_opts(case, b.name, det_opts)
+        reason = unsupported(case, metric, b.name, opts)
+        if reason:
+            out[b.name] = Result(None, skipped=reason)
+            continue
+        n_classes = opts.pop("num_classes", case.num_classes)
+        yt, yp = _final_inputs(metric, case, y_true, y_pred, n_classes)
+        value, err = _backends.safe_compute(b, metric, case.task, yt, yp, n_classes, opts)
         out[b.name] = Result(value, err)
     return out
 
 
-def compare(metric: str, y_true, y_pred, *, backends: list[str] | None = None,
+def build_case(y_true, y_pred, bks, *, average=None, threshold=None, pos_label=None,
+               num_classes=None, settings=None) -> Case:
+    names = tuple(b.name for b in bks)
+    for lib in settings or {}:
+        if lib not in names:
+            raise ValueError(f"settings given for {lib!r}, which is not being compared ({', '.join(names)})")
+    s = make_settings(average, threshold, settings, explicit_classes=num_classes is not None)
+    case = prepare(y_true, y_pred, pos_label=pos_label, num_classes=num_classes)
+    return dataclasses.replace(case, settings=s, backends=names)
+
+
+def compare(metric: str, y_true, y_pred, *, average: str | None = None,
+            threshold: float | None = None, pos_label=None, num_classes: int | None = None,
+            settings: dict[str, dict] | None = None, backends: list[str] | None = None,
             rtol: float = 1e-4, atol: float = 1e-6) -> Report:
     """Compute ``metric`` with every installed library and explain any disagreement.
 
@@ -119,17 +166,25 @@ def compare(metric: str, y_true, y_pred, *, backends: list[str] | None = None,
     y_true: 1-D integer labels.
     y_pred: 1-D labels or binary scores, or 2-D (n_samples, n_classes) multiclass scores.
         Lists, numpy arrays and torch tensors are accepted.
-    backends: subset of ["sklearn", "torchmetrics", "torcheval"]; default = all installed.
+    average: "micro", "macro" or "weighted", passed to every library (multiclass).
+    threshold: decision threshold for binary label metrics, passed to every library.
+    pos_label: which label is the positive class (binary). Labels are mapped to {0, 1}.
+    num_classes: total number of classes, if some never occur in the data.
+    settings: per-library overrides, e.g. ``{"sklearn": {"average": "weighted"}}``, to
+        reproduce code that calls each library differently.
+    backends: subset of ["sklearn", "torchmetrics", "torcheval", "keras"]; default = all installed.
     """
     metric = normalise_metric(metric)
-    case = prepare(y_true, y_pred)
     bks = _backends.resolve(backends)
     names = [b.name for b in bks]
+    case = build_case(y_true, y_pred, bks, average=average, threshold=threshold,
+                      pos_label=pos_label, num_classes=num_classes, settings=settings)
 
     results = _run(bks, metric, case)
     status = _status(results, rtol, atol)
     report = Report(metric, case, {b.name: b.version() for b in bks}, results, status,
-                    notes=notes_for(case, metric))
+                    notes=notes_for(case, metric) + [f"{n}: skipped, {r.skipped}"
+                                                     for n, r in results.items() if r.skipped])
     if status != "mismatch":
         return report
 

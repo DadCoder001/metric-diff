@@ -32,6 +32,19 @@ def load_array(path: str) -> np.ndarray:
     return np.loadtxt(p, delimiter=delimiter, skiprows=skip, ndmin=1)
 
 
+def parse_settings(items: list[str]) -> dict[str, dict]:
+    """['sklearn.average=weighted', 'keras.threshold=0.3'] -> {'sklearn': {...}, 'keras': {...}}"""
+    out: dict[str, dict] = {}
+    for item in items:
+        key, sep, value = item.partition("=")
+        lib, dot, name = key.partition(".")
+        if not (sep and dot and lib and name and value):
+            raise ValueError(f"--set expects LIB.KEY=VALUE, got {item!r}")
+        out.setdefault(lib.strip(), {})[name.strip()] = (
+            float(value) if name.strip() == "threshold" else value.strip())
+    return out
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="metric-diff",
@@ -42,6 +55,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--pred", required=True, dest="y_pred",
                     help="file with predictions: labels, binary scores, or one column per class")
     ap.add_argument("--backends", help="comma-separated subset, e.g. sklearn,torchmetrics,keras")
+    ap.add_argument("--average", choices=["micro", "macro", "weighted"],
+                    help="averaging passed to every library (multiclass)")
+    ap.add_argument("--threshold", type=float, help="decision threshold passed to every library (binary)")
+    ap.add_argument("--pos-label", type=int, help="label of the positive class (binary)")
+    ap.add_argument("--num-classes", type=int, help="total number of classes, if some never occur")
+    ap.add_argument("--set", action="append", default=[], metavar="LIB.KEY=VALUE",
+                    help="per-library setting, e.g. --set sklearn.average=weighted "
+                         "--set torchmetrics.threshold=0.3 (repeatable)")
     ap.add_argument("--batch-size", type=int,
                     help="split the rows into batches of this size and check per-batch vs "
                          "accumulated vs whole-dataset values")
@@ -59,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
         y_true = load_array(args.y_true)
         y_pred = load_array(args.y_pred)
         backends = [b.strip() for b in args.backends.split(",")] if args.backends else None
+        kwargs = dict(average=args.average, threshold=args.threshold, pos_label=args.pos_label,
+                      num_classes=args.num_classes, settings=parse_settings(args.set) or None,
+                      backends=backends)
         if args.expected_n is not None and args.batch_size is None:
             raise ValueError("--expected-n needs --batch-size")
         if args.batch_size is not None:
@@ -67,11 +91,10 @@ def main(argv: list[str] | None = None) -> int:
             n = len(y_true)
             batches = [(y_true[i:i + args.batch_size], y_pred[i:i + args.batch_size])
                        for i in range(0, n, args.batch_size)]
-            report = compare_batched(args.metric, batches, backends=backends,
-                                     expected_n=args.expected_n)
+            report = compare_batched(args.metric, batches, expected_n=args.expected_n, **kwargs)
             failed = not report.ok
         else:
-            report = compare(args.metric, y_true, y_pred, backends=backends)
+            report = compare(args.metric, y_true, y_pred, **kwargs)
             failed = report.status == "mismatch"
     except (ValueError, FileNotFoundError, ImportError) as exc:
         print(f"metric-diff: error: {exc}", file=sys.stderr)

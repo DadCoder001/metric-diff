@@ -81,7 +81,7 @@ def test_cli_text_and_exit_codes(tmp_path, capsys):
     code = main(["accuracy", "--true", str(tmp_path / "y.csv"), "--pred", str(tmp_path / "p.csv")])
     out = capsys.readouterr().out
     assert code == 1
-    assert "Different default averaging" in out and "confirmed" in out
+    assert "Different averaging" in out and "confirmed" in out
 
 
 def test_cli_json_multiclass_scores_npy(tmp_path, capsys):

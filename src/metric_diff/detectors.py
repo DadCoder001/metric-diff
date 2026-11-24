@@ -80,7 +80,7 @@ class PositiveLabel(Detector):
         )
         fix = (
             f"Map the labels to {{0, 1}} before computing any metric: y = (y == {pos}).astype(int). "
-            f"In sklearn you can also pass pos_label={pos}."
+            f"In sklearn you can also pass pos_label={pos}; in metric-diff, compare(..., pos_label={pos})."
         )
         return detail, fix
 
@@ -195,9 +195,37 @@ class SigmoidSaturation(Detector):
         return detail, fix
 
 
+def _threshold(case: Case) -> float:
+    return case.settings.common.get("threshold", 0.5)
+
+
+def _thresholds_by_backend(case: Case) -> dict[str, float]:
+    return {b: case.settings.value(b, "threshold", 0.5) for b in case.backends}
+
+
+class ThresholdMismatch(Detector):
+    key = "threshold"
+    title = "Different decision thresholds"
+
+    def relevant(self, case, metric):
+        if not (case.task == "binary" and case.pred_kind != "labels" and metric in LABEL_METRICS):
+            return False
+        return len(set(_thresholds_by_backend(case).values())) > 1
+
+    def options(self, case, metric):
+        return {"threshold": _threshold(case)}
+
+    def explain(self, case, metric, backends):
+        per = "; ".join(f"{b}: {t}" for b, t in _thresholds_by_backend(case).items())
+        detail = f"The libraries turn scores into labels at different thresholds ({per})."
+        fix = ("Use the same threshold everywhere (threshold= in torchmetrics/torcheval/Keras, "
+               "y_pred >= t for sklearn).")
+        return detail, fix
+
+
 class ThresholdTie(Detector):
     key = "threshold_tie"
-    title = "Scores exactly on the 0.5 threshold"
+    title = "Scores exactly on the decision threshold"
 
     def _probs(self, case):
         return case.y_pred if case.pred_kind == "probs" else _sigmoid(case.y_pred)
@@ -205,20 +233,80 @@ class ThresholdTie(Detector):
     def relevant(self, case, metric):
         if not (case.task == "binary" and case.pred_kind != "labels" and metric in LABEL_METRICS):
             return False
-        return bool(np.any(self._probs(case) == 0.5))
+        return bool(np.any(self._probs(case) == _threshold(case)))
 
     def transform(self, y_true, y_pred, case):
-        return y_true, (self._probs(case) >= 0.5).astype(np.int64)
+        return y_true, (self._probs(case) >= _threshold(case)).astype(np.int64)
 
     def explain(self, case, metric, backends):
-        k = int(np.sum(self._probs(case) == 0.5))
+        t = _threshold(case)
+        k = int(np.sum(self._probs(case) == t))
         detail = (
-            f"{k} prediction(s) are exactly 0.5. torchmetrics"
+            f"{k} prediction(s) are exactly {t}. torchmetrics"
             + (" and Keras count" if "keras" in backends else " counts")
-            + " a sample as positive when score > 0.5, torcheval when score >= 0.5 "
-            "(and so does `y_pred >= 0.5` for sklearn)."
+            + f" a sample as positive when score > {t}, torcheval when score >= {t} "
+            f"(and so does `y_pred >= {t}` for sklearn)."
         )
-        fix = "Threshold explicitly yourself, y_hat = (scores >= 0.5), and pass labels to every library."
+        fix = f"Threshold explicitly yourself, y_hat = (scores >= {t}), and pass labels to every library."
+        return detail, fix
+
+
+class BinaryAverage(Detector):
+    key = "binary_average"
+    title = "sklearn `average` on binary data"
+    requires = "sklearn"
+
+    def relevant(self, case, metric):
+        return (case.task == "binary" and metric in ("precision", "recall", "f1")
+                and case.settings.value("sklearn", "average") is not None)
+
+    def options(self, case, metric):
+        return {"average": None}
+
+    def explain(self, case, metric, backends):
+        avg = case.settings.value("sklearn", "average")
+        extra = " (micro = plain accuracy)" if avg == "micro" else ""
+        detail = (f"With average={avg!r} on binary data, sklearn scores both classes (0 and 1) and "
+                  f"averages them{extra}. torchmetrics, torcheval and Keras binary metrics score "
+                  "only the positive class.")
+        fix = ("For binary data leave sklearn's average at its default 'binary' (choose the positive "
+               "class with pos_label), or use the multiclass metrics in every library if you want "
+               "both classes averaged.")
+        return detail, fix
+
+
+class AbsentClasses(Detector):
+    key = "absent_classes"
+    title = "Classes that never occur"
+
+    def _present(self, case):
+        pred = case.y_pred if case.y_pred.ndim == 1 else case.y_pred.argmax(axis=1)
+        return np.union1d(case.y_true, pred)
+
+    def relevant(self, case, metric):
+        return (case.task == "multiclass" and metric in LABEL_METRICS and metric != "accuracy"
+                and case.settings.explicit_classes and len(self._present(case)) < case.num_classes)
+
+    def transform(self, y_true, y_pred, case):
+        present = self._present(case)
+        index = np.full(case.num_classes, -1, dtype=np.int64)
+        index[present] = np.arange(len(present))
+        y_true = index[y_true]
+        y_pred = index[y_pred] if y_pred.ndim == 1 else y_pred[:, present]
+        return y_true, y_pred
+
+    def options(self, case, metric):
+        return {"num_classes": len(self._present(case))}
+
+    def explain(self, case, metric, backends):
+        absent = sorted(set(range(case.num_classes)) - set(self._present(case).tolist()))
+        counted = ["sklearn (labels=range(num_classes))"] + (["Keras"] if "keras" in backends else [])
+        detail = (f"num_classes={case.num_classes}, but class(es) {absent} appear in neither y_true "
+                  f"nor y_pred. {' and '.join(counted)} count them as 0 in the average; torchmetrics "
+                  "and torcheval leave them out.")
+        fix = ("Decide whether unseen classes should count. To leave them out, pass only the classes "
+               "that occur (sklearn labels=[...]); to count them, compute per-class scores "
+               "(average=None) and average them yourself.")
         return detail, fix
 
 
@@ -297,29 +385,61 @@ class KerasF1Threshold(Detector):
         return detail, fix
 
 
-class Averaging(Detector):
-    key = "average"
-    title = "Different default averaging"
-    reference = "Lightning-AI/torchmetrics#746, meta-pytorch/torcheval#191"
+class SklearnMultiClass(Detector):
+    key = "sklearn_multi_class"
+    title = "sklearn multiclass AUROC needs multi_class"
+    requires = "sklearn"
+    opts = {"multi_class": "ovr"}
 
     def relevant(self, case, metric):
-        return case.task == "multiclass"
-
-    def options(self, case, metric):
-        if metric == "accuracy":  # every library supports micro (plain) accuracy
-            return {"average": "micro"}
-        return {"average": "macro", "multi_class": "ovr"}
+        # When averaging differs too, the Averaging detector already sets multi_class.
+        return (case.task == "multiclass" and metric == "auroc"
+                and not Averaging().relevant(case, metric))
 
     def explain(self, case, metric, backends):
-        lines = [f"{b}: {DEFAULT_AVERAGE[b][metric]}" for b in backends if b in DEFAULT_AVERAGE]
-        detail = "Without `average`, each library averages per-class scores differently: " + "; ".join(lines) + "."
-        fix = 'Pass the averaging explicitly to every library, e.g. average="macro" (or "micro").'
+        detail = ("sklearn's roc_auc_score raises on multiclass data unless you choose "
+                  "multi_class='ovr' (one-vs-rest, what torchmetrics, torcheval and Keras do) or 'ovo'.")
+        fix = "Pass multi_class='ovr' to roc_auc_score."
+        return detail, fix
+
+
+class Averaging(Detector):
+    key = "average"
+    title = "Different averaging"
+    reference = "Lightning-AI/torchmetrics#746, meta-pytorch/torcheval#191"
+
+    def _effective(self, case):
+        return {b: case.settings.value(b, "average") for b in case.backends}
+
+    def relevant(self, case, metric):
+        if case.task != "multiclass":
+            return False
+        values = set(self._effective(case).values())
+        return len(values) > 1 or values == {None}
+
+    def options(self, case, metric):
+        common = case.settings.common.get("average")
+        if common is not None:
+            target = common
+        else:  # every library supports micro accuracy, and macro for the rest
+            target = "micro" if metric == "accuracy" else "macro"
+        return {"average": target, "multi_class": "ovr"}
+
+    def explain(self, case, metric, backends):
+        lines = []
+        for b, v in self._effective(case).items():
+            if v is not None:
+                lines.append(f"{b}: average={v!r} (your setting)")
+            elif b in DEFAULT_AVERAGE:
+                lines.append(f"{b}: {DEFAULT_AVERAGE[b][metric]}")
+        detail = "The libraries average per-class scores differently: " + "; ".join(lines) + "."
+        fix = 'Pass the same averaging explicitly to every library, e.g. average="macro" (or "micro").'
         if metric == "accuracy":
             fix += " Macro accuracy in sklearn is balanced_accuracy_score."
         if "keras" in backends and metric in ("precision", "recall"):
             fix += " In Keras use top_k=1 so the predicted class is the argmax."
         if metric == "auroc":
-            fix += " sklearn also needs multi_class=\"ovr\"."
+            fix += ' sklearn also needs multi_class="ovr".'
         return detail, fix
 
 
@@ -331,10 +451,14 @@ DETECTORS: list[Detector] = [
     SigmoidSaturation(),
     KerasLogits(),
     BinaryLogits(),
+    ThresholdMismatch(),
     ThresholdTie(),
     KerasF1Threshold(),
     KerasPRSummation(),
     KerasThresholdBins(),
+    BinaryAverage(),
+    AbsentClasses(),
+    SklearnMultiClass(),
     Averaging(),
 ]
 

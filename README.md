@@ -58,6 +58,25 @@ report.causes          # list of Cause(key, title, detail, fix, reference)
 report.to_dict()       # JSON-serialisable
 ```
 
+### Check your own settings
+
+By default each library is called with its own defaults. Pass the settings your code uses:
+
+```python
+compare("f1", y, probs, average="weighted")            # every library, same setting
+compare("precision", y, scores, threshold=0.3)
+compare("f1", y, p, pos_label=2)                        # binary labels {1, 2}
+compare("f1", y, p, num_classes=10, average="macro")   # some classes never occur
+
+# Reproduce code that calls each library differently:
+compare("f1", y, probs, settings={
+    "sklearn": {"average": "weighted"},
+    "torchmetrics": {"average": "macro"},
+})
+```
+
+If a library can't do what you asked (torcheval has no weighted AUROC, for example), it is shown as `skipped` with the reason, not counted as a mismatch.
+
 As a test guard:
 
 ```python
@@ -105,7 +124,11 @@ metric-diff f1 --true y_true.csv --pred y_pred.csv
 metric-diff auroc --true y.npy --pred scores.npy --json
 metric-diff f1 --true y.csv --pred p.csv --batch-size 64 --expected-n 1000
 metric-diff f1 --true y.csv --pred p.csv --backends sklearn,keras
+metric-diff f1 --true y.csv --pred p.csv --average weighted
+metric-diff precision --true y.csv --pred p.csv --set sklearn.threshold=0.3 --set torchmetrics.threshold=0.5
 ```
+
+Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, and `--set LIB.KEY=VALUE` (repeatable) for per-library overrides.
 
 Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so it can fail a CI job.
 
@@ -125,6 +148,10 @@ Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so 
 | **Keras** `AUC()` with logits | values clipped to [0, 1] unless `from_logits=True` |
 | **Keras** `AUC()` 200 thresholds | AUROC is approximated; small but real differences |
 | **Keras** `AUC(curve="PR")` | interpolated PR-AUC, not average precision |
+| Different `average` / `threshold` per library (your settings) | e.g. sklearn `weighted` vs torchmetrics `macro` |
+| sklearn `average=` on binary data | averages both classes; torch/Keras binary metrics score the positive class only |
+| `num_classes` with classes that never occur | sklearn (`labels=`) and Keras count them as 0; torchmetrics and torcheval leave them out |
+| sklearn multiclass AUROC without `multi_class` | raises unless `multi_class="ovr"` |
 | Per-batch averaging, padding, dropped samples | see `compare_batched` above |
 
 Metrics: `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`. Tasks: binary and multiclass.
@@ -133,13 +160,13 @@ Metrics: `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`. 
 
 ## Limitations
 
-- Compares libraries with their **default** settings; passing your own `average=` / `threshold=` is planned.
+- Settings supported: `average` (micro / macro / weighted), `threshold`, `pos_label`, `num_classes`. Not yet: `zero_division`, `ignore_index`, `top_k`, per-class output (`average=None`).
 - No multilabel, regression, top-k, sample weights or per-class output yet.
 - Explanations describe the library versions tested (sklearn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15). Tests check the key defaults so they fail loudly when a library changes.
 
 ## Roadmap
 
-- User-supplied settings (`compare("f1", y, p, average="weighted")`)
+- More settings: `zero_division`, `ignore_index`, `top_k`, sample weights
 - Hugging Face `evaluate` backend
 - Regression metrics (R², MAE, MSE, MAPE), multilabel, top-k
 - Segmentation (Dice / IoU) and detection mAP

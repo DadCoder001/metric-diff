@@ -18,9 +18,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import backends as _backends
-from .core import Report, Result, _close, _final_inputs, compare
+from .core import Report, Result, _close, _final_inputs, backend_opts, compare, unsupported
 from .detectors import Averaging
-from .inputs import Case, normalise_metric, prepare, to_numpy
+from .inputs import Case, apply_pos_label, normalise_metric, to_numpy
 
 
 @dataclass
@@ -103,7 +103,9 @@ def _cast(case: Case, y_true, y_pred):
     return y_true, y_pred
 
 
-def compare_batched(metric: str, batches, *, backends: list[str] | None = None,
+def compare_batched(metric: str, batches, *, average: str | None = None,
+                    threshold: float | None = None, pos_label=None, num_classes: int | None = None,
+                    settings: dict[str, dict] | None = None, backends: list[str] | None = None,
                     expected_n: int | None = None, rtol: float = 1e-4,
                     atol: float = 1e-6) -> BatchReport:
     """Compare per-batch, accumulated and whole-dataset values of ``metric``.
@@ -111,25 +113,30 @@ def compare_batched(metric: str, batches, *, backends: list[str] | None = None,
     Parameters
     ----------
     batches: iterable of ``(y_true, y_pred)`` pairs, in the shapes ``compare()`` accepts.
+    average, threshold, pos_label, num_classes, settings: as in ``compare()``.
     expected_n: number of samples in the dataset, if known. Used to detect samples counted
         twice (e.g. DistributedSampler padding) or dropped (drop_last=True).
     """
     metric = normalise_metric(metric)
     raw = _batches_to_arrays(batches)
-    case = prepare(np.concatenate([b[0] for b in raw]), np.concatenate([b[1] for b in raw]))
+    bks = _backends.resolve(backends)
+    dataset = compare(metric, np.concatenate([b[0] for b in raw]), np.concatenate([b[1] for b in raw]),
+                      average=average, threshold=threshold, pos_label=pos_label,
+                      num_classes=num_classes, settings=settings,
+                      backends=[b.name for b in bks], rtol=rtol, atol=atol)
+    case = dataset.case
+    if pos_label is not None:
+        squeeze = (lambda a: a[:, 0] if a.ndim == 2 and a.shape[1] == 1 else a)
+        raw = [apply_pos_label(squeeze(yt), squeeze(yp), pos_label) for yt, yp in raw]
     parts = [_cast(case, yt, yp) for yt, yp in raw]
     sizes = [len(p[0]) for p in parts]
-
-    bks = _backends.resolve(backends)
-    dataset = compare(metric, case.y_true, case.y_pred, backends=[b.name for b in bks],
-                      rtol=rtol, atol=atol)
 
     # Reference library: sklearn if present. If its defaults raise (e.g. multiclass F1
     # without `average`), use settings that work; batching is a separate question.
     ref = next((b for b in bks if b.name == "sklearn"), bks[0])
-    ref_opts: dict = {}
+    ref_opts = backend_opts(case, ref.name)
     if not dataset.results[ref.name].ok and case.task == "multiclass":
-        ref_opts = Averaging().options(case, metric)
+        ref_opts = backend_opts(case, ref.name, Averaging().options(case, metric))
     yt_all, yp_all = _final_inputs(metric, case, case.y_true, case.y_pred)
     value, err = _backends.safe_compute(ref, metric, case.task, yt_all, yp_all, case.num_classes, ref_opts)
     reference = Result(value, err)
@@ -145,8 +152,12 @@ def compare_batched(metric: str, batches, *, backends: list[str] | None = None,
 
     stateful: dict[str, Result] = {}
     for b in bks:
-        def run(b=b):
-            s = b.stateful(metric, case.task, case.num_classes, {})
+        opts = backend_opts(case, b.name)
+        if unsupported(case, metric, b.name, opts):
+            continue  # can't honour the requested average; noted in the dataset report
+
+        def run(b=b, opts=opts):
+            s = b.stateful(metric, case.task, case.num_classes, opts)
             if s is None:
                 return None
             for yt, yp in parts:
