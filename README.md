@@ -67,6 +67,8 @@ compare("f1", y, probs, average="weighted")            # every library, same set
 compare("precision", y, scores, threshold=0.3)
 compare("f1", y, p, pos_label=2)                        # binary labels {1, 2}
 compare("f1", y, p, num_classes=10, average="macro")   # some classes never occur
+compare("precision", y, p, average="macro", zero_division=1)   # value used for 0/0
+compare("accuracy", y, probs, top_k=5)                  # top-k accuracy
 
 # Reproduce code that calls each library differently:
 compare("f1", y, probs, settings={
@@ -128,7 +130,7 @@ metric-diff f1 --true y.csv --pred p.csv --average weighted
 metric-diff precision --true y.csv --pred p.csv --set sklearn.threshold=0.3 --set torchmetrics.threshold=0.5
 ```
 
-Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, and `--set LIB.KEY=VALUE` (repeatable) for per-library overrides.
+Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--zero-division`, `--top-k`, and `--set LIB.KEY=VALUE` (repeatable) for per-library overrides.
 
 Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so it can fail a CI job.
 
@@ -152,6 +154,8 @@ Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so 
 | sklearn `average=` on binary data | averages both classes; torch/Keras binary metrics score the positive class only |
 | `num_classes` with classes that never occur | sklearn (`labels=`) and Keras count them as 0; torchmetrics and torcheval leave them out |
 | sklearn multiclass AUROC without `multi_class` | raises unless `multi_class="ovr"` |
+| Different `zero_division` | what 0/0 becomes; torcheval and Keras always use 0 |
+| Tied scores at the top-k cut-off | torchmetrics keeps the lowest class indices; sklearn, torcheval and Keras count any tied class as a hit |
 | Per-batch averaging, padding, dropped samples | see `compare_batched` above |
 
 Metrics: `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`. Tasks: binary and multiclass.
@@ -160,13 +164,13 @@ Metrics: `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`. 
 
 ## Limitations
 
-- Settings supported: `average` (micro / macro / weighted), `threshold`, `pos_label`, `num_classes`. Not yet: `zero_division`, `ignore_index`, `top_k`, per-class output (`average=None`).
+- Settings supported: `average` (micro / macro / weighted), `threshold`, `pos_label`, `num_classes`, `zero_division`, `top_k` (accuracy). Not yet: `ignore_index` (masking the samples gives the same result in every library), sample weights, per-class output (`average=None`).
 - No multilabel, regression, top-k, sample weights or per-class output yet.
 - Explanations describe the library versions tested (sklearn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15). Tests check the key defaults so they fail loudly when a library changes.
 
 ## Roadmap
 
-- More settings: `zero_division`, `ignore_index`, `top_k`, sample weights
+- More settings: sample weights, per-class output
 - Hugging Face `evaluate` backend
 - Regression metrics (R², MAE, MSE, MAPE), multilabel, top-k
 - Segmentation (Dice / IoU) and detection mAP

@@ -385,6 +385,63 @@ class KerasF1Threshold(Detector):
         return detail, fix
 
 
+class ZeroDivisionMismatch(Detector):
+    key = "zero_division"
+    title = "Different zero_division"
+
+    def _per_backend(self, case):
+        return {b: case.settings.value(b, "zero_division", 0) for b in case.backends}
+
+    def relevant(self, case, metric):
+        return metric in ("precision", "recall", "f1") and len(set(self._per_backend(case).values())) > 1
+
+    def options(self, case, metric):
+        return {"zero_division": case.settings.common.get("zero_division", 0)}
+
+    def explain(self, case, metric, backends):
+        per = "; ".join(f"{b}: {v}" for b, v in self._per_backend(case).items())
+        detail = (f"When a class has no predicted samples (precision) or no true samples (recall), "
+                  f"{metric} is 0/0, and each library fills it with its zero_division value ({per}).")
+        fix = ("Use the same zero_division everywhere. torcheval and Keras have no option and always "
+               "use 0.")
+        return detail, fix
+
+
+class TopKTies(Detector):
+    key = "top_k_ties"
+    title = "Tied scores at the top-k cut-off"
+
+    def _k(self, case):
+        return case.settings.common.get("top_k") or max(case.settings.values("top_k"))
+
+    def _tied_rows(self, case):
+        k = self._k(case)
+        s = -np.sort(-case.y_pred, axis=1)  # descending
+        return s[:, k - 1] == s[:, k] if k < case.num_classes else np.zeros(len(s), bool)
+
+    def relevant(self, case, metric):
+        return (metric == "accuracy" and case.task == "multiclass" and case.y_pred.ndim == 2
+                and bool(case.settings.values("top_k")) and bool(self._tied_rows(case).any()))
+
+    def transform(self, y_true, y_pred, case):
+        # Break ties the way torchmetrics does (lower class index first), so all libraries agree.
+        values = np.unique(y_pred)
+        gap = np.diff(values).min() if len(values) > 1 else 1.0
+        eps = min(1e-6, gap / (case.num_classes + 1))
+        return y_true, y_pred - eps * np.arange(case.num_classes)
+
+    def explain(self, case, metric, backends):
+        k = self._k(case)
+        n = int(self._tied_rows(case).sum())
+        others = [b for b in backends if b != "torchmetrics"]
+        detail = (f"{n} sample(s) have tied scores at the top-{k} cut-off. torchmetrics keeps only k "
+                  f"classes (the lowest class indices win the tie), while {' and '.join(others)} count the "
+                  "sample as correct if the true class is among the tied scores.")
+        fix = ("Top-k accuracy is ambiguous for tied scores: break ties before computing (for example "
+               "add tiny noise or use higher-precision scores) so every library ranks the same way.")
+        return detail, fix
+
+
 class SklearnMultiClass(Detector):
     key = "sklearn_multi_class"
     title = "sklearn multiclass AUROC needs multi_class"
@@ -458,6 +515,8 @@ DETECTORS: list[Detector] = [
     KerasThresholdBins(),
     BinaryAverage(),
     AbsentClasses(),
+    ZeroDivisionMismatch(),
+    TopKTies(),
     SklearnMultiClass(),
     Averaging(),
 ]
@@ -466,7 +525,7 @@ DETECTORS: list[Detector] = [
 def notes_for(case: Case, metric: str) -> list[str]:
     """Observations worth showing even when they don't cause a mismatch."""
     notes = []
-    if metric in LABEL_METRICS and case.pred_kind != "labels":
+    if metric in LABEL_METRICS and case.pred_kind != "labels" and not case.settings.values("top_k"):
         notes.append("sklearn has no threshold argument: metric-diff used `y_pred >= 0.5` (binary) "
                      "or argmax (multiclass), as most users do.")
     if case.task == "multiclass":

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-SETTING_KEYS = ("average", "threshold")
+SETTING_KEYS = ("average", "threshold", "zero_division", "top_k")
 AVERAGES = ("micro", "macro", "weighted")
 
 
@@ -36,6 +36,12 @@ class Settings:
     def empty(self) -> bool:
         return not (self.common or self.per_library or self.explicit_classes)
 
+    def values(self, key: str) -> set:
+        """Every value of ``key`` in play (common or per library)."""
+        out = {self.common[key]} if key in self.common else set()
+        out |= {s[key] for s in self.per_library.values() if key in s}
+        return out
+
     def describe(self) -> str:
         parts = [", ".join(f"{k}={v!r}" for k, v in self.common.items())] if self.common else []
         for lib, s in self.per_library.items():
@@ -43,24 +49,37 @@ class Settings:
         return "; ".join(parts)
 
 
-def make_settings(average=None, threshold=None, settings=None, explicit_classes=False) -> Settings:
-    common = {}
-    if average is not None:
-        common["average"] = _check_average(average)
-    if threshold is not None:
-        common["threshold"] = _check_threshold(threshold)
+def make_settings(average=None, threshold=None, settings=None, explicit_classes=False,
+                  zero_division=None, top_k=None) -> Settings:
+    common = _check_all({"average": average, "threshold": threshold,
+                         "zero_division": zero_division, "top_k": top_k})
     per = {}
     for lib, kw in (settings or {}).items():
         unknown = set(kw) - set(SETTING_KEYS)
         if unknown:
             raise ValueError(f"unknown setting(s) {sorted(unknown)} for {lib}; supported: {', '.join(SETTING_KEYS)}")
-        checked = {}
-        if kw.get("average") is not None:
-            checked["average"] = _check_average(kw["average"])
-        if kw.get("threshold") is not None:
-            checked["threshold"] = _check_threshold(kw["threshold"])
-        per[lib] = checked
+        per[lib] = _check_all(kw)
     return Settings(common, per, explicit_classes)
+
+
+def _check_all(kw: dict) -> dict:
+    checks = {"average": _check_average, "threshold": _check_threshold,
+              "zero_division": _check_zero_division, "top_k": _check_top_k}
+    return {k: checks[k](v) for k, v in kw.items() if v is not None}
+
+
+def _check_zero_division(z):
+    if isinstance(z, str) and z.lower() == "nan" or (isinstance(z, float) and z != z):
+        return "nan"
+    if z in (0, 1):
+        return int(z)
+    raise ValueError(f"zero_division must be 0, 1 or 'nan' (got {z!r})")
+
+
+def _check_top_k(k):
+    if isinstance(k, bool) or int(k) != k or int(k) < 1:
+        raise ValueError(f"top_k must be a positive integer (got {k!r})")
+    return int(k)
 
 
 def _check_average(a):

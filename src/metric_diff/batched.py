@@ -105,6 +105,7 @@ def _cast(case: Case, y_true, y_pred):
 
 def compare_batched(metric: str, batches, *, average: str | None = None,
                     threshold: float | None = None, pos_label=None, num_classes: int | None = None,
+                    zero_division=None, top_k: int | None = None,
                     settings: dict[str, dict] | None = None, backends: list[str] | None = None,
                     expected_n: int | None = None, rtol: float = 1e-4,
                     atol: float = 1e-6) -> BatchReport:
@@ -122,7 +123,8 @@ def compare_batched(metric: str, batches, *, average: str | None = None,
     bks = _backends.resolve(backends)
     dataset = compare(metric, np.concatenate([b[0] for b in raw]), np.concatenate([b[1] for b in raw]),
                       average=average, threshold=threshold, pos_label=pos_label,
-                      num_classes=num_classes, settings=settings,
+                      num_classes=num_classes, zero_division=zero_division, top_k=top_k,
+                      settings=settings,
                       backends=[b.name for b in bks], rtol=rtol, atol=atol)
     case = dataset.case
     if pos_label is not None:

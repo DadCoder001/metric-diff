@@ -113,7 +113,11 @@ def backend_opts(case: Case, name: str, detector_opts: dict | None = None) -> di
 
 
 def unsupported(case: Case, metric: str, name: str, opts: dict) -> str | None:
-    """Reason this library can't honour the user's own `average`, or None."""
+    """Reason this library can't honour the user's settings, or None."""
+    backend = _backends.ALL_BACKENDS.get(name)
+    reason = backend().unsupported(metric, case.task, opts) if backend else None
+    if reason:
+        return reason
     avg = opts.get("average")
     if case.task != "multiclass" or avg is None or avg != case.settings.value(name, "average"):
         return None
@@ -143,19 +147,28 @@ def _run(bks, metric, case, detectors: tuple[Detector, ...] = ()) -> dict[str, R
     return out
 
 
-def build_case(y_true, y_pred, bks, *, average=None, threshold=None, pos_label=None,
-               num_classes=None, settings=None) -> Case:
+def build_case(metric, y_true, y_pred, bks, *, average=None, threshold=None, pos_label=None,
+               num_classes=None, zero_division=None, top_k=None, settings=None) -> Case:
     names = tuple(b.name for b in bks)
     for lib in settings or {}:
         if lib not in names:
             raise ValueError(f"settings given for {lib!r}, which is not being compared ({', '.join(names)})")
-    s = make_settings(average, threshold, settings, explicit_classes=num_classes is not None)
+    s = make_settings(average, threshold, settings, explicit_classes=num_classes is not None,
+                      zero_division=zero_division, top_k=top_k)
     case = prepare(y_true, y_pred, pos_label=pos_label, num_classes=num_classes)
+    if s.values("top_k"):
+        if metric != "accuracy":
+            raise ValueError("top_k is supported for accuracy only")
+        if case.task != "multiclass" or case.y_pred.ndim != 2:
+            raise ValueError("top_k needs multiclass scores: y_pred of shape (n_samples, n_classes)")
+        if max(s.values("top_k")) > case.num_classes:
+            raise ValueError(f"top_k={max(s.values('top_k'))} is larger than num_classes={case.num_classes}")
     return dataclasses.replace(case, settings=s, backends=names)
 
 
 def compare(metric: str, y_true, y_pred, *, average: str | None = None,
             threshold: float | None = None, pos_label=None, num_classes: int | None = None,
+            zero_division=None, top_k: int | None = None,
             settings: dict[str, dict] | None = None, backends: list[str] | None = None,
             rtol: float = 1e-4, atol: float = 1e-6) -> Report:
     """Compute ``metric`` with every installed library and explain any disagreement.
@@ -170,6 +183,8 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     threshold: decision threshold for binary label metrics, passed to every library.
     pos_label: which label is the positive class (binary). Labels are mapped to {0, 1}.
     num_classes: total number of classes, if some never occur in the data.
+    zero_division: 0, 1 or "nan": the value of precision/recall/F1 when it is 0/0.
+    top_k: top-k accuracy (multiclass scores only).
     settings: per-library overrides, e.g. ``{"sklearn": {"average": "weighted"}}``, to
         reproduce code that calls each library differently.
     backends: subset of ["sklearn", "torchmetrics", "torcheval", "keras"]; default = all installed.
@@ -177,8 +192,9 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     metric = normalise_metric(metric)
     bks = _backends.resolve(backends)
     names = [b.name for b in bks]
-    case = build_case(y_true, y_pred, bks, average=average, threshold=threshold,
-                      pos_label=pos_label, num_classes=num_classes, settings=settings)
+    case = build_case(metric, y_true, y_pred, bks, average=average, threshold=threshold,
+                      pos_label=pos_label, num_classes=num_classes, zero_division=zero_division,
+                      top_k=top_k, settings=settings)
 
     results = _run(bks, metric, case)
     status = _status(results, rtol, atol)

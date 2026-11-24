@@ -99,6 +99,10 @@ class Backend:
         or None if the library has no accumulating metric objects."""
         return None
 
+    def unsupported(self, metric: str, task: str, opts: dict) -> str | None:
+        """Why this library can't honour a requested setting (beyond `average`), or None."""
+        return None
+
     def version(self) -> str:
         try:
             from importlib.metadata import version
@@ -122,6 +126,9 @@ class SklearnBackend(Backend):
         import sklearn.metrics as skm
 
         avg = opts.get("average")
+        if metric == "accuracy" and opts.get("top_k"):
+            return float(skm.top_k_accuracy_score(y_true, y_pred, k=opts["top_k"],
+                                                  labels=list(range(num_classes))))
         if metric in LABEL_METRICS:
             if y_pred.dtype.kind == "f":
                 if y_pred.ndim == 1:
@@ -139,7 +146,8 @@ class SklearnBackend(Backend):
             kw = {"average": avg} if avg else {}
             if task == "multiclass" and opts.get("explicit_classes"):
                 kw["labels"] = list(range(num_classes))  # how sklearn users say "there are C classes"
-            return float(fn(y_true, y_pred, zero_division=0, **kw))
+            zd = opts.get("zero_division", 0)  # sklearn's default "warn" behaves as 0
+            return float(fn(y_true, y_pred, zero_division=np.nan if zd == "nan" else zd, **kw))
 
         if metric == "auroc":
             if task == "binary":
@@ -158,6 +166,11 @@ class SklearnBackend(Backend):
 
         raise ValueError(metric)  # pragma: no cover
 
+    def unsupported(self, metric, task, opts):
+        if opts.get("top_k") and opts.get("average") not in (None, "micro"):
+            return "top_k_accuracy_score has no `average` (micro only)"
+        return None
+
 
 def _tensors(y_true, y_pred):
     import torch
@@ -170,7 +183,7 @@ def _tensors(y_true, y_pred):
     return target, preds
 
 
-def _torch_kwargs(metric, task, num_classes, opts):
+def _torch_kwargs(metric, task, num_classes, opts, lib="torchmetrics"):
     kw = {}
     if task == "binary":
         if metric in LABEL_METRICS and "threshold" in opts:
@@ -179,7 +192,17 @@ def _torch_kwargs(metric, task, num_classes, opts):
         kw["num_classes"] = num_classes
         if "average" in opts:
             kw["average"] = opts["average"]
+        if metric == "accuracy" and opts.get("top_k"):
+            kw["top_k" if lib == "torchmetrics" else "k"] = opts["top_k"]
+    if lib == "torchmetrics" and metric in ("precision", "recall", "f1") and "zero_division" in opts:
+        kw["zero_division"] = opts["zero_division"]
     return kw
+
+
+def _always_zero_division(lib, metric, opts):
+    if metric in ("precision", "recall", "f1") and opts.get("zero_division", 0) != 0:
+        return f"{lib} has no zero_division setting (always 0)"
+    return None
 
 
 class _TorchStateful:
@@ -219,6 +242,11 @@ class TorchmetricsBackend(Backend):
         cls = getattr(C, f"{task.capitalize()}{cls_name}")
         return _TorchStateful(cls(**_torch_kwargs(metric, task, num_classes, opts)), metric)
 
+    def unsupported(self, metric, task, opts):
+        if opts.get("zero_division") == "nan":
+            return "zero_division must be 0 or 1 in torchmetrics"
+        return None
+
 
 class TorchevalBackend(Backend):
     name = "torcheval"
@@ -232,14 +260,17 @@ class TorchevalBackend(Backend):
             preds = preds.float()
         name = {"f1": "f1_score", "average_precision": "auprc"}.get(metric, metric)
         fn = getattr(F, f"{task}_{name}")
-        return float(fn(preds, target, **_torch_kwargs(metric, task, num_classes, opts)))
+        return float(fn(preds, target, **_torch_kwargs(metric, task, num_classes, opts, "torcheval")))
 
     def stateful(self, metric, task, num_classes, opts):
         import torcheval.metrics as M
 
         cls_name = {"average_precision": "AUPRC"}.get(metric, _TORCH_NAMES.get(metric))
         cls = getattr(M, f"{task.capitalize()}{cls_name}")
-        return _TorchStateful(cls(**_torch_kwargs(metric, task, num_classes, opts)), metric)
+        return _TorchStateful(cls(**_torch_kwargs(metric, task, num_classes, opts, "torcheval")), metric)
+
+    def unsupported(self, metric, task, opts):
+        return _always_zero_division("torcheval", metric, opts)
 
 
 _MAX_KERAS_THRESHOLDS = 5000
@@ -338,10 +369,12 @@ class KerasBackend(Backend):
         elif metric == "accuracy":
             if task == "binary":
                 objs = [M.BinaryAccuracy(threshold=0.5 if thr is None else thr)]
-            elif avg in (None, "micro"):
-                objs = [M.CategoricalAccuracy()]
-            else:
+            elif avg not in (None, "micro"):
                 raise ValueError(f"Keras has no accuracy with average={avg!r}")
+            elif opts.get("top_k"):
+                objs = [M.TopKCategoricalAccuracy(k=opts["top_k"])]
+            else:
+                objs = [M.CategoricalAccuracy()]
         elif metric in ("precision", "recall"):
             cls = M.Precision if metric == "precision" else M.Recall
             if task == "binary":
@@ -360,6 +393,9 @@ class KerasBackend(Backend):
             else:
                 objs = [M.F1Score(average=avg)]
         return _KerasStateful(objs, metric, task, num_classes, opts)
+
+    def unsupported(self, metric, task, opts):
+        return _always_zero_division("keras", metric, opts)
 
 
 ALL_BACKENDS: dict[str, Callable[[], Backend]] = {

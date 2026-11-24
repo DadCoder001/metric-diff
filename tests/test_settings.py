@@ -86,10 +86,64 @@ def test_num_classes_with_class_that_never_occurs():
     assert r.confirmed and keys(r) == ["absent_classes"]
 
 
+ZD_Y = [0, 1, 2, 2, 1, 0]
+ZD_P = [0, 1, 1, 0, 1, 0]  # class 2 is never predicted -> its precision is 0/0
+
+
+def test_zero_division_one_skips_libraries_without_the_option():
+    r = compare("precision", ZD_Y, ZD_P, average="macro", zero_division=1)
+    assert r.agree
+    assert r.results["sklearn"].value == pytest.approx(7 / 9)
+    for name in ("torcheval", "keras"):
+        if name in r.results:
+            assert "always 0" in r.results[name].skipped
+
+
+def test_zero_division_per_library_mismatch():
+    r = compare("precision", ZD_Y, ZD_P, average="macro", backends=["sklearn", "torchmetrics"],
+                settings={"sklearn": {"zero_division": 1}})
+    assert r.confirmed and keys(r) == ["zero_division"]
+
+
+def test_zero_division_nan_only_in_sklearn():
+    r = compare("precision", ZD_Y, ZD_P, average="macro", zero_division="nan", backends=THREE)
+    assert r.results["torchmetrics"].skipped and r.results["torcheval"].skipped
+
+
+TIES = np.array([[0.4, 0.3, 0.3, 0.0], [0.25, 0.25, 0.25, 0.25], [0.1, 0.2, 0.6, 0.1]])
+
+
+def test_top_k_ties_torchmetrics_differs():
+    r = compare("accuracy", [2, 3, 2], TIES, top_k=2, average="micro", backends=THREE)
+    assert r.results["sklearn"].value == pytest.approx(1.0)
+    assert r.results["torchmetrics"].value == pytest.approx(1 / 3, abs=1e-6)
+    assert r.confirmed and keys(r) == ["top_k_ties"]
+
+
+def test_top_k_without_ties_agrees():
+    q = rng.random((40, 5))
+    q /= q.sum(1, keepdims=True)
+    assert compare("accuracy", np.arange(40) % 5, q, top_k=3, average="micro").agree
+
+
+@pytest.mark.parametrize("kwargs,msg", [
+    (dict(top_k=2), "accuracy only"),
+    (dict(zero_division=2), "zero_division must be"),
+])
+def test_invalid_new_settings(kwargs, msg):
+    with pytest.raises(ValueError, match=msg):
+        compare("f1", Y, PROBS, **kwargs)
+
+
+def test_top_k_needs_scores():
+    with pytest.raises(ValueError, match="multiclass scores"):
+        compare("accuracy", [0, 1, 2], [0, 1, 1], top_k=2)
+
+
 @pytest.mark.parametrize("kwargs,msg", [
     (dict(num_classes=2), "contains label"),
     (dict(settings={"jax": {"average": "macro"}}), "not being compared"),
-    (dict(settings={"sklearn": {"zero_division": 1}}), "unknown setting"),
+    (dict(settings={"sklearn": {"ignore_index": -100}}), "unknown setting"),
     (dict(average="samples"), "average must be"),
     (dict(threshold=1.5), "between 0 and 1"),
 ])
