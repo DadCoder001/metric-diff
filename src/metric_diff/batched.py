@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import backends as _backends
-from .core import Report, Result, _close, _final_inputs, backend_opts, compare, unsupported
+from .core import Report, Result, _close, _final_inputs, backend_opts, compare, resolve_for, unsupported
 from .detectors import Averaging
 from .inputs import Case, apply_pos_label, normalise_metric, to_numpy
 
@@ -96,6 +96,8 @@ def _batches_to_arrays(batches) -> list[tuple[np.ndarray, np.ndarray]]:
 
 def _cast(case: Case, y_true, y_pred):
     y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
+    if case.task == "segmentation":
+        return y_true.astype(np.int64), y_pred.astype(np.int64)
     if case.task == "regression":
         squeeze = (lambda a: a[:, 0] if a.ndim == 2 and a.shape[1] == 1 else a)
         return squeeze(y_true).astype(np.float64), squeeze(y_pred).astype(np.float64)
@@ -109,6 +111,7 @@ def _cast(case: Case, y_true, y_pred):
 def compare_batched(metric: str, batches, *, average: str | None = None,
                     threshold: float | None = None, pos_label=None, num_classes: int | None = None,
                     zero_division=None, top_k: int | None = None,
+                    include_background: bool | None = None, aggregation: str | None = None,
                     settings: dict[str, dict] | None = None, backends: list[str] | None = None,
                     expected_n: int | None = None, rtol: float = 1e-4,
                     atol: float = 1e-6) -> BatchReport:
@@ -123,10 +126,11 @@ def compare_batched(metric: str, batches, *, average: str | None = None,
     """
     metric = normalise_metric(metric)
     raw = _batches_to_arrays(batches)
-    bks = _backends.resolve(backends)
+    bks = resolve_for(metric, backends)
     dataset = compare(metric, np.concatenate([b[0] for b in raw]), np.concatenate([b[1] for b in raw]),
                       average=average, threshold=threshold, pos_label=pos_label,
                       num_classes=num_classes, zero_division=zero_division, top_k=top_k,
+                      include_background=include_background, aggregation=aggregation,
                       settings=settings,
                       backends=[b.name for b in bks], rtol=rtol, atol=atol)
     case = dataset.case
@@ -162,7 +166,12 @@ def compare_batched(metric: str, batches, *, average: str | None = None,
             continue  # can't honour the requested average; noted in the dataset report
 
         def run(b=b, opts=opts):
-            s = b.stateful(metric, case.task, case.num_classes, opts)
+            if case.task == "segmentation":
+                from . import segmentation
+
+                s = segmentation.stateful(b.name, metric, case.num_classes, opts)
+            else:
+                s = b.stateful(metric, case.task, case.num_classes, opts)
             if s is None:
                 return None
             for yt, yp in parts:

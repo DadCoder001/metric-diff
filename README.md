@@ -2,7 +2,7 @@
 
 **Your F1 score is 0.75 in torchmetrics, 0.70 in torcheval, a vector in Keras and an error in sklearn. Which one is right, and why?**
 
-`metric-diff` computes the same metric with **scikit-learn**, **torchmetrics**, **torcheval**, **Keras 3** and **Hugging Face evaluate**. When they disagree, it finds the setting that causes it, **re-runs every library with that setting aligned to confirm**, and tells you how to fix your code.
+`metric-diff` computes the same metric with **scikit-learn**, **torchmetrics**, **torcheval**, **Keras 3**, **Hugging Face evaluate** and **MONAI** (segmentation). When they disagree, it finds the setting that causes it, **re-runs every library with that setting aligned to confirm**, and tells you how to fix your code.
 
 It also answers the other classic question: **is the number I logged per batch the number for my dataset?**
 
@@ -41,6 +41,7 @@ pip install metric-diff            # sklearn only (reference)
 pip install "metric-diff[torch]"   # + torchmetrics and torcheval
 pip install "metric-diff[keras]"   # + Keras 3
 pip install "metric-diff[evaluate]"  # + Hugging Face evaluate
+pip install "metric-diff[monai]"   # + MONAI (segmentation)
 pip install "metric-diff[all]"     # everything
 ```
 
@@ -121,6 +122,17 @@ It reports:
 - a library whose `update()`/`compute()` doesn't match its own one-shot result
 - with `expected_n`: samples counted twice (DistributedSampler padding) or dropped (`drop_last=True`)
 
+### Segmentation (Dice, IoU)
+
+Pass integer label maps of shape `(n_images, *spatial)`, e.g. `(N, H, W)` or `(N, D, H, W)`:
+
+```python
+compare("dice", true_masks, pred_masks)                        # each library's defaults
+compare("iou", true_masks, pred_masks, aggregation="per_image", include_background=False)
+```
+
+On the same 3 images, "mean IoU" is 0.653 in sklearn, Keras and evaluate (all pixels pooled), 0.631 in torchmetrics (per image) and 0.735 in MONAI (per image, and false positives on images without the class are ignored). metric-diff names and confirms both causes.
+
 ### Command line
 
 `.csv`, `.txt` or `.npy`, with one column per class for multiclass scores:
@@ -134,7 +146,7 @@ metric-diff f1 --true y.csv --pred p.csv --average weighted
 metric-diff precision --true y.csv --pred p.csv --set sklearn.threshold=0.3 --set torchmetrics.threshold=0.5
 ```
 
-Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--zero-division`, `--top-k`, and `--set LIB.KEY=VALUE` (repeatable) for per-library overrides.
+Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--zero-division`, `--top-k`, `--include-background`, `--aggregation`, and `--set LIB.KEY=VALUE` (repeatable) for per-library overrides.
 
 Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so it can fail a CI job.
 
@@ -164,29 +176,42 @@ Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so 
 | **Regression:** Keras MAPE is a percentage | 28.0 in Keras vs 0.28 in sklearn and torchmetrics |
 | **Regression:** MAPE with zero targets | each library divides by a different tiny epsilon: 7.5e14 vs 142,450 vs 1.7e8 |
 | **Regression:** R2 with a constant target | torcheval and evaluate return -inf (torcheval NaN if perfect); others return 0.0 (1.0) |
+| **Segmentation:** per-image vs whole-dataset averaging | torchmetrics and MONAI average per image; sklearn, Keras and evaluate pool all pixels |
+| **Segmentation:** MONAI `ignore_empty=True` | false positives on images where the class is absent are ignored, so the score looks better |
+| **Segmentation:** background counted or not | `include_background` differs between your calls |
+| **Segmentation:** torchmetrics `input_format` | label maps without `input_format="index"` silently give a wrong number (shown as a note) |
 | **evaluate** `r_squared` rounds to 3 decimals | 0.959 vs 0.9595 |
 | **Regression:** float32 rounding on large values | R2 of 1.0000001 instead of 0.989 when values are about 1e6 (torchmetrics#3077) |
 
 Metrics:
 
 - **Classification** (binary and multiclass): `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`
+- **Segmentation** (label maps, 2-D or 3-D): `dice`, `iou` (Keras and evaluate have IoU only; torcheval has none)
 - **Regression** (single or multi-output): `r2`, `mae`, `mse`, `rmse`, `mape` (torcheval only has `r2` and `mse`; evaluate is single-output only)
 
 evaluate has no average precision, `zero_division` or top-k; those cases show it as skipped.
 
 **How a cause is confirmed:** each detector knows how to align one setting (for example pass `average="macro"` everywhere, or apply softmax first). metric-diff re-runs all libraries with the alignment and only says *confirmed* if they then agree. If nothing reproduces agreement, it says so: that is often a new bug worth reporting.
 
+## Which number is right?
+
+Usually none is "wrong": the libraries answer slightly different questions. Pick the convention your field reports and state it:
+
+- **Classification and regression:** scikit-learn is the de facto reference; metric-diff uses it as the baseline.
+- **Segmentation:** follow [Metrics Reloaded](https://doi.org/10.1038/s41592-023-02151-z) (Maier-Hein et al., *Nature Methods* 2024), the consortium recommendations for choosing and aggregating image-analysis metrics, and report whether Dice/IoU is per image or pooled and whether background is included.
+
 ## Limitations
 
 - Settings supported: `average` (micro / macro / weighted), `threshold`, `pos_label`, `num_classes`, `zero_division`, `top_k` (accuracy). Not yet: `ignore_index` (masking the samples gives the same result in every library), sample weights, per-class output (`average=None`).
 - No multilabel, sample weights or per-class output yet. Regression has no settings yet (e.g. `multioutput`).
-- Explanations describe the library versions tested (sklearn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15, evaluate 0.4.6). Tests check the key defaults so they fail loudly when a library changes.
+- Explanations describe the library versions tested (sklearn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15, evaluate 0.4.6, MONAI 1.6). Tests check the key defaults so they fail loudly when a library changes.
 
 ## Roadmap
 
 - More settings: sample weights, per-class output
 - Multilabel classification; regression settings (`multioutput`, sample weights)
-- Segmentation (Dice / IoU) and detection mAP
+- Detection mAP (pycocotools / COCO conventions)
+- A conformance matrix: every metric and edge case across every installed library, to track drift between library versions
 - pytest plugin
 
 ## Contributing

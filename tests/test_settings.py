@@ -180,6 +180,8 @@ def test_supported_averages_table_matches_installed_libraries():
     """Guard: the table decides when a library is skipped, so it must match reality."""
     case = prepare(Y, PROBS)
     for b in resolve(None):
+        if "classification" not in b.tasks:
+            continue
         for metric, expected in SUPPORTED_AVERAGES[b.name].items():
             works = set()
             for avg in ("micro", "macro", "weighted"):

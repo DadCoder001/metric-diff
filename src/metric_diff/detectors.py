@@ -492,6 +492,92 @@ class Float32Precision(Detector):
         return detail, fix
 
 
+def _seg_aggregations(case):
+    from .segmentation import NATIVE_AGGREGATION
+
+    return {b: case.settings.value(b, "aggregation") or NATIVE_AGGREGATION.get(b, "dataset")
+            for b in case.backends}
+
+
+class SegAggregation(Detector):
+    key = "seg_aggregation"
+    title = "Per-image vs whole-dataset averaging"
+    reference = "Metrics Reloaded (Maier-Hein et al., Nature Methods 2024)"
+
+    def relevant(self, case, metric):
+        return case.task == "segmentation" and len(set(_seg_aggregations(case).values())) > 1
+
+    def options(self, case, metric):
+        return {"aggregation": case.settings.common.get("aggregation", "per_image")}
+
+    def explain(self, case, metric, backends):
+        from .segmentation import DEFAULT_TEXT
+
+        parts = []
+        for b, agg in _seg_aggregations(case).items():
+            if case.settings.value(b, "aggregation"):
+                parts.append(f"{b}: aggregation={agg!r} (your setting)")
+            else:
+                parts.append(f"{b}: {DEFAULT_TEXT.get(b, agg)}")
+        detail = ("The libraries combine images differently: " + "; ".join(parts) + ". A per-image "
+                  "average gives every image the same weight (small structures count as much as large "
+                  "ones); pooling the dataset weights images by their pixel counts.")
+        fix = ("Choose one on purpose and report it: per-image (the usual choice in medical "
+               "imaging) or dataset-level (common for semantic segmentation benchmarks). In "
+               "torchmetrics set aggregation_level=; sklearn, Keras and evaluate pool unless you "
+               "score each image yourself.")
+        return detail, fix
+
+
+class MonaiIgnoreEmpty(Detector):
+    key = "monai_ignore_empty"
+    title = "MONAI ignores classes whose target is empty"
+    requires = "monai"
+    opts = {"monai_count_empty_target": True}
+
+    def _cells(self, case):
+        axes = tuple(range(1, case.y_true.ndim))
+        start = 0 if case.settings.value("monai", "include_background", True) else 1
+        return sum(int((~(case.y_true == c).any(axis=axes) & (case.y_pred == c).any(axis=axes)).sum())
+                   for c in range(start, case.num_classes))
+
+    def relevant(self, case, metric):
+        return case.task == "segmentation" and self._cells(case) > 0
+
+    def explain(self, case, metric, backends):
+        n = self._cells(case)
+        detail = (f"In {n} (image, class) pair(s) the class is predicted although it is absent from "
+                  "the target. With ignore_empty=True (the default) MONAI leaves those out, so the "
+                  "false positives cost nothing and the score looks better; the other libraries "
+                  f"count them as {metric} = 0.")
+        fix = ("Use ignore_empty=False to count them, but note it then scores classes absent from both "
+               "target and prediction as 1.0. To match the other libraries, use reduction='none' and "
+               "average only the (image, class) pairs where the class occurs.")
+        return detail, fix
+
+
+class SegBackground(Detector):
+    key = "seg_background"
+    title = "Background class counted differently"
+
+    def _per_backend(self, case):
+        return {b: case.settings.value(b, "include_background", True) for b in case.backends}
+
+    def relevant(self, case, metric):
+        return case.task == "segmentation" and len(set(self._per_backend(case).values())) > 1
+
+    def options(self, case, metric):
+        return {"include_background": case.settings.common.get("include_background", True)}
+
+    def explain(self, case, metric, backends):
+        per = "; ".join(f"{b}: {v}" for b, v in self._per_backend(case).items())
+        detail = (f"Some libraries include the background class (0) in the average and others don't "
+                  f"(include_background: {per}). Background is usually large and easy, so including "
+                  "it raises the score.")
+        fix = "Use the same include_background everywhere, and say in your results which you used."
+        return detail, fix
+
+
 class ZeroDivisionMismatch(Detector):
     key = "zero_division"
     title = "Different zero_division"
@@ -622,6 +708,9 @@ DETECTORS: list[Detector] = [
     KerasThresholdBins(),
     BinaryAverage(),
     AbsentClasses(),
+    SegBackground(),
+    MonaiIgnoreEmpty(),
+    SegAggregation(),
     MapeZeroTarget(),
     MapePercent(),
     R2ConstantTarget(),
@@ -637,6 +726,19 @@ DETECTORS: list[Detector] = [
 def notes_for(case: Case, metric: str) -> list[str]:
     """Observations worth showing even when they don't cause a mismatch."""
     notes = []
+    if case.task == "segmentation":
+        if "torchmetrics" in case.backends:
+            from .segmentation import _torchmetrics, torchmetrics_default_format
+
+            wrong = torchmetrics_default_format(metric, case.y_true, case.y_pred, case.num_classes)
+            try:
+                right = _torchmetrics(metric, case.y_true, case.y_pred, case.num_classes, {})
+            except Exception:
+                right = None
+            if wrong is not None and right is not None and abs(wrong - right) > 1e-6:
+                notes.append(f"torchmetrics expects one-hot masks by default: passing these label maps "
+                             f"without input_format='index' silently gives {wrong:.4f} instead of {right:.4f}.")
+        return notes
     if case.task == "regression":
         if metric == "r2" and case.n_samples < 2:
             notes.append("R2 needs at least 2 samples.")

@@ -45,6 +45,8 @@ def parse_settings(items: list[str]) -> dict[str, dict]:
             parsed = float(value)
         elif name == "top_k" or (name == "zero_division" and value in ("0", "1")):
             parsed = int(value)
+        elif name == "include_background":
+            parsed = value.lower() == "true"
         else:
             parsed = value
         out.setdefault(lib.strip(), {})[name] = parsed
@@ -69,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--zero-division", choices=["0", "1", "nan"],
                     help="value of precision/recall/F1 when it is 0/0, passed to every library")
     ap.add_argument("--top-k", type=int, help="top-k accuracy (multiclass scores)")
+    ap.add_argument("--include-background", choices=["true", "false"],
+                    help="segmentation: count class 0 in the average")
+    ap.add_argument("--aggregation", choices=["dataset", "per_image"],
+                    help="segmentation: pool all pixels, or score each image and average")
     ap.add_argument("--set", action="append", default=[], metavar="LIB.KEY=VALUE",
                     help="per-library setting, e.g. --set sklearn.average=weighted "
                          "--set torchmetrics.threshold=0.3 (repeatable)")
@@ -92,7 +98,10 @@ def main(argv: list[str] | None = None) -> int:
         zd = args.zero_division
         kwargs = dict(average=args.average, threshold=args.threshold, pos_label=args.pos_label,
                       num_classes=args.num_classes, zero_division=int(zd) if zd in ("0", "1") else zd,
-                      top_k=args.top_k, settings=parse_settings(args.set) or None,
+                      top_k=args.top_k,
+                      include_background=None if args.include_background is None
+                      else args.include_background == "true",
+                      aggregation=args.aggregation, settings=parse_settings(args.set) or None,
                       backends=backends)
         if args.expected_n is not None and args.batch_size is None:
             raise ValueError("--expected-n needs --batch-size")

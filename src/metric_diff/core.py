@@ -10,8 +10,9 @@ import numpy as np
 
 from . import backends as _backends
 from .detectors import DETECTORS, Detector, notes_for
-from .inputs import (LABEL_METRICS, REGRESSION_METRICS, Case, make_settings, normalise_metric, prepare,
-                     prepare_regression)
+from .inputs import (LABEL_METRICS, REGRESSION_METRICS, SEGMENTATION_KEYS, SEGMENTATION_METRICS,
+                     SETTING_KEYS, Case, make_settings, normalise_metric, prepare, prepare_regression,
+                     prepare_segmentation)
 
 
 @dataclass
@@ -94,6 +95,8 @@ def _status(results: dict[str, Result], rtol: float, atol: float) -> str:
 
 def _final_inputs(metric: str, case: Case, y_true, y_pred, num_classes: int | None = None):
     """Shape conversions every library needs (not a 'cause', just plumbing)."""
+    if case.task == "segmentation":
+        return y_true, y_pred
     if metric not in LABEL_METRICS:
         if case.task == "multiclass" and y_pred.ndim == 1:
             y_pred = np.eye(num_classes or case.num_classes, dtype=np.float64)[y_pred]
@@ -117,6 +120,10 @@ def backend_opts(case: Case, name: str, detector_opts: dict | None = None) -> di
 
 def unsupported(case: Case, metric: str, name: str, opts: dict) -> str | None:
     """Reason this library can't honour the user's settings, or None."""
+    if case.task == "segmentation":
+        from . import segmentation
+
+        return segmentation.unsupported(name, metric, opts, case.y_true.ndim)
     backend = _backends.ALL_BACKENDS.get(name)
     reason = backend().unsupported(metric, case.task, opts) if backend else None
     if reason:
@@ -153,14 +160,42 @@ def _run(bks, metric, case, detectors: tuple[Detector, ...] = ()) -> dict[str, R
     return out
 
 
+def task_of(metric: str) -> str:
+    if metric in REGRESSION_METRICS:
+        return "regression"
+    if metric in SEGMENTATION_METRICS:
+        return "segmentation"
+    return "classification"
+
+
+def resolve_for(metric: str, names: list[str] | None):
+    """Backends to compare: the ones named, or every installed one that covers this task."""
+    bks = _backends.resolve(names)
+    if names is None:
+        bks = [b for b in bks if task_of(metric) in b.tasks]
+    return bks
+
+
 def build_case(metric, y_true, y_pred, bks, *, average=None, threshold=None, pos_label=None,
-               num_classes=None, zero_division=None, top_k=None, settings=None) -> Case:
+               num_classes=None, zero_division=None, top_k=None, include_background=None,
+               aggregation=None, settings=None) -> Case:
     names = tuple(b.name for b in bks)
     for lib in settings or {}:
         if lib not in names:
             raise ValueError(f"settings given for {lib!r}, which is not being compared ({', '.join(names)})")
     s = make_settings(average, threshold, settings, explicit_classes=num_classes is not None,
-                      zero_division=zero_division, top_k=top_k)
+                      zero_division=zero_division, top_k=top_k,
+                      include_background=include_background, aggregation=aggregation)
+    seg_keys = {k for k in SEGMENTATION_KEYS if s.values(k)}
+    if metric in SEGMENTATION_METRICS:
+        other = {k for k in SETTING_KEYS if s.values(k)} - set(SEGMENTATION_KEYS)
+        if other or pos_label is not None:
+            raise ValueError("segmentation metrics take include_background, aggregation and "
+                             f"num_classes only (got {sorted(other) or ['pos_label']})")
+        case = prepare_segmentation(y_true, y_pred, num_classes)
+        return dataclasses.replace(case, settings=s, backends=names)
+    if seg_keys:
+        raise ValueError(f"{sorted(seg_keys)} apply to segmentation metrics (dice, iou) only")
     if metric in REGRESSION_METRICS:
         if not s.empty or pos_label is not None:
             raise ValueError("average, threshold, pos_label, num_classes, zero_division and top_k "
@@ -179,7 +214,8 @@ def build_case(metric, y_true, y_pred, bks, *, average=None, threshold=None, pos
 
 def compare(metric: str, y_true, y_pred, *, average: str | None = None,
             threshold: float | None = None, pos_label=None, num_classes: int | None = None,
-            zero_division=None, top_k: int | None = None,
+            zero_division=None, top_k: int | None = None, include_background: bool | None = None,
+            aggregation: str | None = None,
             settings: dict[str, dict] | None = None, backends: list[str] | None = None,
             rtol: float = 1e-4, atol: float = 1e-6) -> Report:
     """Compute ``metric`` with every installed library and explain any disagreement.
@@ -187,7 +223,8 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     Parameters
     ----------
     metric: classification: accuracy, precision, recall, f1, auroc, average_precision;
-        regression: r2, mae, mse, rmse, mape (aliases accepted).
+        regression: r2, mae, mse, rmse, mape; segmentation: dice, iou (aliases accepted).
+        Segmentation inputs are integer label maps of shape (n_images, *spatial).
     y_true: classification: 1-D integer labels. Regression: 1-D values, or 2-D for multi-output.
     y_pred: classification: 1-D labels or binary scores, or 2-D (n_samples, n_classes)
         multiclass scores. Regression: same shape as y_true.
@@ -198,16 +235,19 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     num_classes: total number of classes, if some never occur in the data.
     zero_division: 0, 1 or "nan": the value of precision/recall/F1 when it is 0/0.
     top_k: top-k accuracy (multiclass scores only).
+    include_background: segmentation: count class 0 in the average (default: each library's default, True).
+    aggregation: segmentation: "dataset" (pool all pixels) or "per_image" (score each image, then average).
     settings: per-library overrides, e.g. ``{"sklearn": {"average": "weighted"}}``, to
         reproduce code that calls each library differently.
     backends: subset of ["sklearn", "torchmetrics", "torcheval", "keras"]; default = all installed.
     """
     metric = normalise_metric(metric)
-    bks = _backends.resolve(backends)
+    bks = resolve_for(metric, backends)
     names = [b.name for b in bks]
     case = build_case(metric, y_true, y_pred, bks, average=average, threshold=threshold,
                       pos_label=pos_label, num_classes=num_classes, zero_division=zero_division,
-                      top_k=top_k, settings=settings)
+                      top_k=top_k, include_background=include_background, aggregation=aggregation,
+                      settings=settings)
 
     results = _run(bks, metric, case)
     status = _status(results, rtol, atol)

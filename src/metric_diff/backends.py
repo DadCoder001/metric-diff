@@ -93,9 +93,17 @@ _TORCH_NAMES = {
 }
 
 
+TASKS = ("classification", "regression", "segmentation")
+
+
+def task_family(task: str) -> str:
+    return "classification" if task in ("binary", "multiclass") else task
+
+
 class Backend:
     name: str = ""
     module: str = ""
+    tasks: tuple = TASKS  # which kinds of metrics this library is compared on by default
 
     def available(self) -> bool:
         return importlib.util.find_spec(self.module) is not None
@@ -309,6 +317,7 @@ class TorchmetricsBackend(Backend):
 class TorchevalBackend(Backend):
     name = "torcheval"
     module = "torcheval"
+    tasks = ("classification", "regression")
 
     def compute(self, metric, task, y_true, y_pred, num_classes, opts):
         import torcheval.metrics.functional as F
@@ -589,12 +598,24 @@ class EvaluateBackend(Backend):
         return _EvaluateStateful(self, metric, task, num_classes, {**opts, "num_classes_for_labels": num_classes})
 
 
+class MonaiBackend(Backend):
+    """MONAI, the standard library for medical image segmentation (segmentation metrics only)."""
+
+    name = "monai"
+    module = "monai"
+    tasks = ("segmentation",)
+
+    def unsupported(self, metric, task, opts):
+        return "MONAI is compared on segmentation metrics only"
+
+
 ALL_BACKENDS: dict[str, Callable[[], Backend]] = {
     "sklearn": SklearnBackend,
     "torchmetrics": TorchmetricsBackend,
     "torcheval": TorchevalBackend,
     "keras": KerasBackend,
     "evaluate": EvaluateBackend,
+    "monai": MonaiBackend,
 }
 
 
@@ -608,7 +629,7 @@ def resolve(names: list[str] | None) -> list[Backend]:
             raise ValueError(f"unknown backend {n!r}; choose from {', '.join(ALL_BACKENDS)}")
         b = ALL_BACKENDS[n]()
         if not b.available():
-            extra = n if n in ("keras", "evaluate") else "torch"
+            extra = n if n in ("keras", "evaluate", "monai") else "torch"
             raise ImportError(f"backend {n!r} is not installed (pip install 'metric-diff[{extra}]')")
         out.append(b)
     return out
@@ -632,5 +653,9 @@ def safe_call(fn, *args) -> tuple[float | None, str | None]:
     return value, None
 
 
-def safe_compute(backend: Backend, *args) -> tuple[float | None, str | None]:
-    return safe_call(backend.compute, *args)
+def safe_compute(backend: Backend, metric: str, task: str, *rest) -> tuple[float | None, str | None]:
+    if task == "segmentation":
+        from . import segmentation
+
+        return safe_call(segmentation.compute, backend.name, metric, *rest)
+    return safe_call(backend.compute, metric, task, *rest)

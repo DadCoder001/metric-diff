@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-SETTING_KEYS = ("average", "threshold", "zero_division", "top_k")
+SETTING_KEYS = ("average", "threshold", "zero_division", "top_k", "include_background", "aggregation")
 AVERAGES = ("micro", "macro", "weighted")
 
 
@@ -50,9 +50,11 @@ class Settings:
 
 
 def make_settings(average=None, threshold=None, settings=None, explicit_classes=False,
-                  zero_division=None, top_k=None) -> Settings:
+                  zero_division=None, top_k=None, include_background=None,
+                  aggregation=None) -> Settings:
     common = _check_all({"average": average, "threshold": threshold,
-                         "zero_division": zero_division, "top_k": top_k})
+                         "zero_division": zero_division, "top_k": top_k,
+                         "include_background": include_background, "aggregation": aggregation})
     per = {}
     for lib, kw in (settings or {}).items():
         unknown = set(kw) - set(SETTING_KEYS)
@@ -64,8 +66,23 @@ def make_settings(average=None, threshold=None, settings=None, explicit_classes=
 
 def _check_all(kw: dict) -> dict:
     checks = {"average": _check_average, "threshold": _check_threshold,
-              "zero_division": _check_zero_division, "top_k": _check_top_k}
+              "zero_division": _check_zero_division, "top_k": _check_top_k,
+              "include_background": _check_bool, "aggregation": _check_aggregation}
     return {k: checks[k](v) for k, v in kw.items() if v is not None}
+
+
+def _check_bool(v):
+    if isinstance(v, str) and v.lower() in ("true", "false"):
+        return v.lower() == "true"
+    if not isinstance(v, (bool, np.bool_)):
+        raise ValueError(f"include_background must be True or False (got {v!r})")
+    return bool(v)
+
+
+def _check_aggregation(a):
+    if a not in AGGREGATIONS:
+        raise ValueError(f"aggregation must be one of {', '.join(AGGREGATIONS)} (got {a!r})")
+    return a
 
 
 def _check_zero_division(z):
@@ -96,7 +113,10 @@ def _check_threshold(t):
 
 CLASSIFICATION_METRICS = ("accuracy", "precision", "recall", "f1", "auroc", "average_precision")
 REGRESSION_METRICS = ("r2", "mae", "mse", "rmse", "mape")
-METRICS = CLASSIFICATION_METRICS + REGRESSION_METRICS
+SEGMENTATION_METRICS = ("dice", "iou")
+METRICS = CLASSIFICATION_METRICS + REGRESSION_METRICS + SEGMENTATION_METRICS
+SEGMENTATION_KEYS = ("include_background", "aggregation")
+AGGREGATIONS = ("dataset", "per_image")
 LABEL_METRICS = ("accuracy", "precision", "recall", "f1")
 RANKING_METRICS = ("auroc", "average_precision")
 
@@ -107,6 +127,10 @@ _ALIASES = {
     "mean_squared_error": "mse",
     "root_mean_squared_error": "rmse",
     "mean_absolute_percentage_error": "mape",
+    "dice_score": "dice",
+    "jaccard": "iou",
+    "mean_iou": "iou",
+    "miou": "iou",
     "acc": "accuracy",
     "f1_score": "f1",
     "f1score": "f1",
@@ -156,6 +180,9 @@ class Case:
         return int(self.y_true.shape[0])
 
     def describe(self) -> str:
+        if self.task == "segmentation":
+            shape = "x".join(str(s) for s in self.y_true.shape[1:])
+            return f"segmentation, {self.n_samples} images of {shape}, {self.num_classes} classes"
         if self.task == "regression":
             outputs = "" if self.y_true.ndim == 1 else f", {self.y_true.shape[1]} outputs"
             return f"regression, {self.n_samples} samples{outputs}"
@@ -202,6 +229,29 @@ def prepare(y_true, y_pred, *, pos_label=None, num_classes=None) -> Case:
                 raise ValueError(f"num_classes={num_classes} but the data contains label {case.num_classes - 1}")
             case = Case(case.y_true, case.y_pred, "multiclass", num_classes, case.pred_kind)
     return case
+
+
+def prepare_segmentation(y_true, y_pred, num_classes=None) -> Case:
+    """Label maps: integer arrays of shape (n_images, *spatial), e.g. (N, H, W) or (N, D, H, W)."""
+    yt, yp = to_numpy(y_true), to_numpy(y_pred)
+    if yt.shape != yp.shape:
+        raise ValueError(f"y_true has shape {yt.shape} but y_pred has shape {yp.shape}; they must match")
+    if yt.ndim < 2:
+        raise ValueError("segmentation inputs must be label maps of shape (n_images, *spatial), "
+                         "e.g. (N, H, W); add a leading axis for a single image")
+    if yt.size == 0:
+        raise ValueError("inputs are empty")
+    if not (_is_integer_valued(yt) and _is_integer_valued(yp)):
+        raise ValueError("segmentation inputs must be integer class labels per pixel (argmax your "
+                         "probabilities first)")
+    yt, yp = yt.astype(np.int64), yp.astype(np.int64)
+    if min(yt.min(), yp.min()) < 0:
+        raise ValueError("label maps contain negative labels")
+    inferred = int(max(yt.max(), yp.max())) + 1
+    n = inferred if num_classes is None else int(num_classes)
+    if n < inferred:
+        raise ValueError(f"num_classes={n} but the label maps contain label {inferred - 1}")
+    return Case(yt, yp, "segmentation", max(n, 2), "labels")
 
 
 def prepare_regression(y_true, y_pred) -> Case:
