@@ -63,12 +63,12 @@ class BatchReport:
             "expected_n": self.expected_n,
             "reference": {"library": self.reference_name, "value": self.reference.value,
                           "error": self.reference.error},
-            "per_batch": self.per_batch,
+            "per_batch": list(self.per_batch),
             "batch_mean": self.batch_mean,
             "weighted_mean": self.weighted_mean,
             "stateful": {k: {"value": r.value, "error": r.error} for k, r in self.stateful.items()},
             "ok": self.ok,
-            "findings": [f.__dict__ for f in self.findings],
+            "findings": [dict(f.__dict__) for f in self.findings],
             "dataset": self.dataset.to_dict(),
         }
 

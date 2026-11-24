@@ -150,6 +150,61 @@ Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--z
 
 Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so it can fail a CI job.
 
+## Conformance matrix: every library, every known edge case
+
+`compare()` answers *"why do my numbers disagree?"* for your data. The conformance matrix asks the question in advance: it runs a library of known edge cases (30 today, covering classification, regression and segmentation, each linked to the upstream issue where there is one) on every installed library, and shows who agrees and who doesn't.
+
+```bash
+metric-diff matrix                                   # table in the terminal
+metric-diff matrix --format markdown --output metrics-matrix.md
+metric-diff matrix --save baseline.json              # remember today's results
+metric-diff matrix --baseline baseline.json          # what changed since? exit 1 on drift
+metric-diff matrix --case seg- --case auroc          # only some cases
+metric-diff matrix --list                            # the edge cases
+```
+
+An excerpt (sklearn 1.9.1, torchmetrics 1.9.0, torcheval 0.0.7, Keras 3.15.1, evaluate 0.4.6, MONAI 1.6.2):
+
+```text
+case                        sklearn   torchmetrics  torcheval  keras       evaluate  monai     confirmed cause
+bin-auroc-large-logits      0.9286    0.5000 x      0.9286     0.5000 x    0.9286              saturation
+bin-f1-labels-1-2           0.8000    error         1.1111 x   1.1111 x    0.8000              pos_label
+mc-accuracy-default         0.7000    0.6667 x      0.7000     0.7000      0.7000              average
+mc-top2-ties                1.0000    0.3333 x      1.0000     1.0000      -                   top_k_ties
+reg-mape                    0.2805    0.2805        -          28.0476 x   0.2805              mape_percent
+reg-r2-large-values         0.9890    1.0000 x      1.0000 x   1.0000 x    0.9890              float32_precision
+seg-iou-default             0.6530    0.6308 x                 0.6530      0.6530    0.7350 x  monai_ignore_empty, seg_aggregation
+```
+
+`x` = differs from sklearn (or from the majority when sklearn can't compute it), `-` = the library can't do this.
+
+### Why it matters
+
+- **Upgrade safety.** Save a baseline, then re-run after upgrading a library. If torchmetrics 1.9 -> 2.0 changes AUROC on saturated logits, or macro F1 with an unseen class, you see that exact cell change, the day you upgrade instead of months later when results quietly shift between experiments.
+- **Choosing or switching libraries.** Moving a pipeline from Keras to PyTorch, or from sklearn to torchmetrics? See every known difference before you migrate, not one bug report at a time.
+- **Reproducible reporting.** Attach the Markdown matrix to a paper, model card or internal report: "computed with torchmetrics 1.9, which differs from sklearn in these documented ways". Reviewers and other teams can compare numbers fairly.
+- **Finding real bugs.** Red cells on control cases are library bugs; torchmetrics#2819 and the torcheval / Keras F1 > 1 on labels {1, 2} show up exactly like that.
+- **Shared knowledge.** Every reported mismatch becomes a new edge case, so the matrix keeps growing and everyone's CI checks it.
+
+### Who it's for
+
+| You are | Use | How |
+|---|---|---|
+| A developer debugging a number today | `compare()` | on your own data |
+| An ML platform / MLOps team | `matrix --baseline` | in CI, on every dependency upgrade |
+| A researcher reporting results | both | attach `matrix --format markdown` to the paper |
+| A metric library maintainer | `matrix` | a cross-library test suite that points at regressions |
+
+### In CI
+
+```yaml
+# .github/workflows/metric-drift.yml
+- run: pip install "metric-diff[all]"
+- run: metric-diff matrix --baseline metric-baseline.json   # fails the job if any result changed
+```
+
+Commit `metric-baseline.json` (created once with `--save`); after an intended upgrade, review the drift and save a new baseline.
+
 ## What it detects
 
 | Cause | Example |
@@ -211,12 +266,12 @@ Usually none is "wrong": the libraries answer slightly different questions. Pick
 - More settings: sample weights, per-class output
 - Multilabel classification; regression settings (`multioutput`, sample weights)
 - Detection mAP (pycocotools / COCO conventions)
-- A conformance matrix: every metric and edge case across every installed library, to track drift between library versions
+- More edge cases in the matrix (send yours as an issue with `--json` output)
 - pytest plugin
 
 ## Contributing
 
-Every known mismatch lives in `tests/` as a regression case linked to its upstream issue. Found a new one? Open an issue with the `--json` output.
+Every known mismatch lives in `src/metric_diff/cases.py` (the matrix) and in `tests/` as a regression case linked to its upstream issue. Found a new one? Open an issue with the `--json` output.
 
 ## License
 

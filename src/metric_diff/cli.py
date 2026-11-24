@@ -56,7 +56,8 @@ def parse_settings(items: list[str]) -> dict[str, dict]:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="metric-diff",
-        description="Compute a metric with sklearn, torchmetrics and torcheval; explain any disagreement.",
+        description="Compute a metric with every installed library and explain any disagreement. "
+                    "Run `metric-diff matrix` for the conformance matrix of known edge cases.",
     )
     ap.add_argument("metric", help=f"one of: {', '.join(METRICS)}")
     ap.add_argument("--true", required=True, dest="y_true", help="file with true labels (.csv, .txt, .npy)")
@@ -89,7 +90,62 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def build_matrix_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="metric-diff matrix",
+        description="Run every known edge case on every installed library. Save the result and "
+                    "compare later runs with it to catch drift when a library is upgraded.",
+    )
+    ap.add_argument("--backends", help="comma-separated subset of libraries")
+    ap.add_argument("--case", action="append", default=[], metavar="TEXT",
+                    help="only cases whose id contains TEXT (repeatable), e.g. --case seg- --case auroc")
+    ap.add_argument("--format", choices=["text", "markdown", "json"], default="text")
+    ap.add_argument("--output", help="write the table to this file instead of the terminal")
+    ap.add_argument("--save", metavar="FILE", help="save this run as JSON (a baseline for later)")
+    ap.add_argument("--baseline", metavar="FILE",
+                    help="compare with a saved run; exit code 1 if any result changed")
+    ap.add_argument("--list", action="store_true", help="list the edge cases and exit")
+    return ap
+
+
+def matrix_main(argv: list[str]) -> int:
+    from .cases import CASES
+    from .matrix import MatrixResult, run_matrix
+
+    args = build_matrix_parser().parse_args(argv)
+    if args.list:
+        for c in CASES:
+            ref = f"  [{c.reference}]" if c.reference else ""
+            print(f"{c.id:28s} {c.metric:18s} {c.title}{ref}")
+        return 0
+    try:
+        baseline = MatrixResult.load(args.baseline) if args.baseline else None
+        backends = [b.strip() for b in args.backends.split(",")] if args.backends else None
+        result = run_matrix(backends=backends, cases=args.case or None)
+    except (ValueError, FileNotFoundError, ImportError, json.JSONDecodeError) as exc:
+        print(f"metric-diff: error: {exc}", file=sys.stderr)
+        return 2
+
+    text = {"text": result.to_text, "markdown": result.to_markdown,
+            "json": lambda: json.dumps(result.to_dict(), indent=2)}[args.format]()
+    if args.output:
+        Path(args.output).write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+    if args.save:
+        result.save(args.save)
+    if baseline is not None:
+        drift = result.diff(baseline)
+        print()
+        print(drift.to_text())
+        return 1 if drift.found else 0
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "matrix":
+        return matrix_main(argv[1:])
     args = build_parser().parse_args(argv)
     try:
         y_true = load_array(args.y_true)

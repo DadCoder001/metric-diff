@@ -62,15 +62,16 @@ class Report:
             "num_classes": self.case.num_classes,
             "n_samples": self.case.n_samples,
             "pred_kind": self.case.pred_kind,
-            "settings": {"common": s.common, "per_library": s.per_library,
+            "settings": {"common": dict(s.common),
+                         "per_library": {k: dict(v) for k, v in s.per_library.items()},
                          "explicit_num_classes": s.explicit_classes},
-            "versions": self.versions,
+            "versions": dict(self.versions),
             "status": self.status,
             "results": res(self.results),
             "confirmed": self.confirmed,
-            "causes": [c.__dict__ for c in self.causes],
+            "causes": [dict(c.__dict__) for c in self.causes],
             "aligned": res(self.aligned),
-            "notes": self.notes,
+            "notes": list(self.notes),
         }
 
     def __str__(self) -> str:
