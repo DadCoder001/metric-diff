@@ -92,19 +92,38 @@ def _sklearn(metric, y_true, y_pred, num_classes, opts):
     return _per_image(one, y_true, y_pred)
 
 
+# Images processed at a time: one-hot encodings are n_images x n_classes x pixels, which runs
+# into gigabytes on real data (e.g. ADE20K: 150 classes). Per-image scores don't depend on other
+# images, so chunking gives the same result.
+CHUNK = 8
+
+
+def _chunks(n):
+    return [slice(i, i + CHUNK) for i in range(0, n, CHUNK)]
+
+
 def _torchmetrics(metric, y_true, y_pred, num_classes, opts):
     import torch
     import torchmetrics.functional.segmentation as S
+    import torchmetrics.segmentation as SC
 
-    preds, target = torch.as_tensor(y_pred), torch.as_tensor(y_true)
     bg = opts.get("include_background", True)
-    if metric == "dice":
-        level = "global" if _agg("torchmetrics", opts) == "dataset" else "samplewise"
-        v = S.dice_score(preds, target, num_classes=num_classes, include_background=bg,
-                         input_format="index", aggregation_level=level)
-    else:
-        v = S.mean_iou(preds, target, num_classes=num_classes, include_background=bg, input_format="index")
-    return float(torch.nanmean(v.float()))
+    if metric == "dice" and _agg("torchmetrics", opts) == "dataset":
+        obj = SC.DiceScore(num_classes=num_classes, include_background=bg, input_format="index",
+                           aggregation_level="global")
+        for sl in _chunks(len(y_true)):
+            obj.update(torch.as_tensor(y_pred[sl]), torch.as_tensor(y_true[sl]))
+        return float(torch.nanmean(obj.compute().float()))
+    per_image = []
+    for sl in _chunks(len(y_true)):
+        preds, target = torch.as_tensor(y_pred[sl]), torch.as_tensor(y_true[sl])
+        if metric == "dice":
+            v = S.dice_score(preds, target, num_classes=num_classes, include_background=bg,
+                             input_format="index", aggregation_level="samplewise")
+        else:
+            v = S.mean_iou(preds, target, num_classes=num_classes, include_background=bg, input_format="index")
+        per_image.append(v.float().reshape(-1))
+    return float(torch.nanmean(torch.cat(per_image)))
 
 
 def torchmetrics_default_format(metric, y_true, y_pred, num_classes) -> float | None:
@@ -133,9 +152,15 @@ def _monai_raw(metric, y_true, y_pred, num_classes, opts):
 
     bg = opts.get("include_background", True)
     count_empty = opts.get("monai_count_empty_target", False)
-    cls = M.DiceMetric if metric == "dice" else M.MeanIoU
-    m = cls(include_background=bg, reduction="none", ignore_empty=not count_empty)
-    raw = m(_one_hot(y_pred, num_classes), _one_hot(y_true, num_classes)).float()
+    if metric == "dice":
+        # DiceMetric takes label maps directly with num_classes: same values, ~3x faster than
+        # one-hot on many classes (checked on ADE20K, 150 classes).
+        m = M.DiceMetric(include_background=bg, reduction="none", ignore_empty=not count_empty,
+                         num_classes=num_classes)
+        raw = m(torch.as_tensor(y_pred[:, None]), torch.as_tensor(y_true[:, None])).float()
+    else:
+        m = M.MeanIoU(include_background=bg, reduction="none", ignore_empty=not count_empty)
+        raw = m(_one_hot(y_pred, num_classes), _one_hot(y_true, num_classes)).float()
     if count_empty:
         # ignore_empty=False scores a class absent from both target and prediction as 1.0;
         # leave those out, like the other libraries do.
@@ -149,9 +174,9 @@ def _monai_raw(metric, y_true, y_pred, num_classes, opts):
 def _monai(metric, y_true, y_pred, num_classes, opts):
     import torch
 
-    raw = _monai_raw(metric, y_true, y_pred, num_classes, opts)
-    per_image = torch.nanmean(raw, dim=1)
-    return float(torch.nanmean(per_image))
+    per_image = [torch.nanmean(_monai_raw(metric, y_true[sl], y_pred[sl], num_classes, opts), dim=1)
+                 for sl in _chunks(len(y_true))]
+    return float(torch.nanmean(torch.cat(per_image)))
 
 
 def _keras(metric, y_true, y_pred, num_classes, opts):
@@ -187,7 +212,11 @@ def _evaluate(metric, y_true, y_pred, num_classes, opts):
 
 class _Stateful:
     def __init__(self, update, compute):
-        self.update, self.compute = update, compute
+        self._update, self.compute = update, compute
+
+    def update(self, y_true, y_pred):
+        for sl in _chunks(len(y_true)):  # bounded memory, same result
+            self._update(y_true[sl], y_pred[sl])
 
 
 def stateful(name: str, metric: str, num_classes: int, opts: dict):

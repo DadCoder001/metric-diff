@@ -126,6 +126,25 @@ def test_batched_segmentation():
     assert r.stateful["torchmetrics"].value == pytest.approx(r.dataset.results["torchmetrics"].value, abs=1e-5)
 
 
+def test_torchmetrics_meaniou_class_differs_from_function():
+    # Found on ADE20K: MeanIoU (class) pools (image, class) pairs, mean_iou (function) averages
+    # per image. Images here contain 3, 3 and 2 classes, so the two differ.
+    r = compare_batched("iou", [(T, P)], backends=SK_TM)
+    finding = next(f for f in r.findings if f.key == "stateful_torchmetrics")
+    assert "not caused by batching" in finding.detail
+
+
+def test_two_column_binary_auroc_confirmed():
+    # A binary model's softmax output: two score columns. sklearn needs scores[:, 1].
+    rng = np.random.default_rng(0)
+    y = rng.integers(0, 2, 60)
+    logits = np.c_[-y + rng.normal(size=60), y + rng.normal(size=60)]
+    r = compare("auroc", y, logits, backends=["sklearn", "torchmetrics", "torcheval"])
+    assert not r.results["sklearn"].ok
+    assert r.confirmed
+    assert any("scores[:, 1]" in c.fix for c in r.causes)
+
+
 def test_cli_segmentation(tmp_path, capsys):
     np.save(tmp_path / "t.npy", T)
     np.save(tmp_path / "p.npy", P)

@@ -177,6 +177,10 @@ class SklearnBackend(Backend):
         if metric == "auroc":
             if task == "binary":
                 return float(skm.roc_auc_score(y_true, y_pred))
+            if num_classes == 2 and opts.get("multi_class", "raise") != "raise":
+                # Two score columns (a binary model with a softmax head): sklearn wants the
+                # positive-class column. One-vs-rest AUROC is the same for both columns.
+                return float(skm.roc_auc_score(y_true, y_pred[:, 1]))
             kw = {"average": avg} if avg else {}
             return float(skm.roc_auc_score(
                 y_true, y_pred, multi_class=opts.get("multi_class", "raise"),
@@ -551,6 +555,9 @@ class EvaluateBackend(Backend):
     def _module(self, metric, task, opts):
         """(loaded metric, compute kwargs, name of the predictions argument)"""
         kwargs = {}
+        if metric == "auroc" and task == "multiclass" and opts.get("num_classes_for_labels") == 2 \
+                and opts.get("multi_class", "raise") != "raise":
+            return _load_evaluate("roc_auc"), kwargs, "prediction_scores_col1"
         if metric == "auroc":
             module = _load_evaluate("roc_auc", "multiclass" if task == "multiclass" else None)
             if task == "multiclass":
@@ -589,6 +596,8 @@ class EvaluateBackend(Backend):
         opts = {**opts, "num_classes_for_labels": num_classes}
         module, kwargs, key = self._module(metric, task, opts)
         refs, preds = self._inputs(metric, task, y_true, y_pred, opts)
+        if key == "prediction_scores_col1":  # binary roc_auc on the positive-class column
+            key, preds = "prediction_scores", [row[1] for row in preds]
         value = self._value(metric, module.compute(references=refs, **{key: preds}, **kwargs))
         if metric == "r2" and opts.get("r2_force_finite"):
             value = _r2_force_finite(value, y_true, y_pred)

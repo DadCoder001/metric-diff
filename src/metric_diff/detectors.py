@@ -662,7 +662,8 @@ class SklearnMultiClass(Detector):
     def explain(self, case, metric, backends):
         detail = ("sklearn's roc_auc_score raises on multiclass data unless you choose "
                   "multi_class='ovr' (one-vs-rest, what torchmetrics, torcheval and Keras do) or 'ovo'.")
-        fix = "Pass multi_class='ovr' to roc_auc_score."
+        fix = "Pass multi_class='ovr' to roc_auc_score." + (" With two score columns (a binary model with a softmax head), give sklearn the "
+                    "positive-class column instead: roc_auc_score(y, scores[:, 1])." if case.num_classes == 2 else "")
         return detail, fix
 
 
@@ -702,7 +703,8 @@ class Averaging(Detector):
         if "keras" in backends and metric in ("precision", "recall"):
             fix += " In Keras use top_k=1 so the predicted class is the argmax."
         if metric == "auroc":
-            fix += ' sklearn also needs multi_class="ovr".'
+            fix += ' sklearn also needs multi_class="ovr".' + (" With two score columns (a binary model with a softmax head), give sklearn the "
+                    "positive-class column instead: roc_auc_score(y, scores[:, 1])." if case.num_classes == 2 else "")
         return detail, fix
 
 

@@ -230,6 +230,15 @@ def _find(r: BatchReport, rtol: float, atol: float) -> None:
         fix = (f"Check that the metric is reset() between epochs and not shared between train and "
                f"validation. If it persists, report it to {name} with this output.")
         ref = "Lightning-AI/torchmetrics#3573" if name == "torchmetrics" else None
+        if name == "torchmetrics" and r.case.task == "segmentation" and m == "iou":
+            detail += (" This is not caused by batching: torchmetrics' MeanIoU class averages all "
+                       "(image, class) pairs together, so images with many classes weigh more, while "
+                       "the mean_iou function averages within each image first. The two torchmetrics "
+                       "APIs give different numbers on the same data whenever images contain different "
+                       "numbers of classes.")
+            fix = ("Pick one API and report which: torchmetrics.functional.segmentation.mean_iou "
+                   "(per image, like MONAI and DiceScore) or the MeanIoU class (all pairs pooled). "
+                   "This inconsistency is worth reporting to torchmetrics.")
         if (name == "keras" and r.case.task == "regression" and r.case.y_true.ndim == 1
                 and not r.case.column_vector and m in ("mae", "mse", "mape")):
             detail += (" Keras reduces over the last axis: with 1-D targets each update_state() call "
