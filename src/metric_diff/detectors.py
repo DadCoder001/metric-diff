@@ -33,6 +33,9 @@ class Detector:
     reference: str | None = None
     opts: dict = {}
     requires: str | None = None  # only relevant when this backend is being compared
+    # Libraries whose result this cause explains (None = any). Used to pick the best
+    # explanation when several alignments reproduce agreement.
+    affects: frozenset | None = None
 
     def relevant(self, case: Case, metric: str) -> bool:
         raise NotImplementedError
@@ -124,6 +127,8 @@ class Softmax(Detector):
             "automatically, torcheval ranks the raw logits per class (which changes one-vs-rest "
             "rankings), and sklearn requires probabilities that sum to 1 and raises."
         )
+        if "keras" in backends:
+            detail += " Keras AUC treats the scores as probabilities and clips them to [0, 1]."
         fix = "Apply softmax yourself before every library: torch.softmax(logits, dim=1)."
         return detail, fix
 
@@ -155,6 +160,7 @@ class BinaryLogits(Detector):
 
 
 class SigmoidSaturation(Detector):
+    affects = frozenset({"torchmetrics", "keras"})
     key = "saturation"
     title = "Large logits saturate when squashed to probabilities"
     reference = "Lightning-AI/torchmetrics#2819"
@@ -311,13 +317,13 @@ class AbsentClasses(Detector):
 
 
 class KerasLogits(Detector):
+    affects = frozenset({"keras"})
     key = "keras_logits"
     title = "Keras AUC expects probabilities"
     requires = "keras"
 
     def relevant(self, case, metric):
-        return (case.task == "binary" and case.pred_kind == "logits" and metric in RANKING_METRICS
-                and not SigmoidSaturation().relevant(case, metric))
+        return case.task == "binary" and case.pred_kind == "logits" and metric in RANKING_METRICS
 
     def transform(self, y_true, y_pred, case):
         from scipy.stats import rankdata
@@ -333,6 +339,7 @@ class KerasLogits(Detector):
 
 
 class KerasThresholdBins(Detector):
+    affects = frozenset({"keras"})
     key = "keras_bins"
     title = "Keras approximates AUC with 200 thresholds"
     requires = "keras"
@@ -351,6 +358,7 @@ class KerasThresholdBins(Detector):
 
 
 class KerasPRSummation(Detector):
+    affects = frozenset({"keras"})
     key = "keras_pr"
     title = "Keras PR-AUC is not average precision"
     requires = "keras"
@@ -369,6 +377,7 @@ class KerasPRSummation(Detector):
 
 
 class KerasF1Threshold(Detector):
+    affects = frozenset({"keras"})
     key = "keras_f1_threshold"
     title = "Keras F1Score has no threshold by default"
     requires = "keras"
@@ -386,6 +395,7 @@ class KerasF1Threshold(Detector):
 
 
 class MapePercent(Detector):
+    affects = frozenset({"keras"})
     key = "mape_percent"
     title = "Keras MAPE is a percentage"
     requires = "keras"
@@ -427,6 +437,7 @@ class MapeZeroTarget(Detector):
 
 
 class R2ConstantTarget(Detector):
+    affects = frozenset({"torcheval", "evaluate"})
     key = "r2_constant_target"
     title = "R2 with a constant target"
     opts = {"r2_force_finite": True}
@@ -448,6 +459,7 @@ class R2ConstantTarget(Detector):
 
 
 class EvaluateR2Rounding(Detector):
+    affects = frozenset({"evaluate"})
     key = "evaluate_r2_rounding"
     title = "evaluate rounds R2 to 3 decimals"
     requires = "evaluate"
@@ -530,6 +542,7 @@ class SegAggregation(Detector):
 
 
 class MonaiIgnoreEmpty(Detector):
+    affects = frozenset({"monai"})
     key = "monai_ignore_empty"
     title = "MONAI ignores classes whose target is empty"
     requires = "monai"

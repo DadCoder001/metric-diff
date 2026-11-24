@@ -230,6 +230,13 @@ def _find(r: BatchReport, rtol: float, atol: float) -> None:
         fix = (f"Check that the metric is reset() between epochs and not shared between train and "
                f"validation. If it persists, report it to {name} with this output.")
         ref = "Lightning-AI/torchmetrics#3573" if name == "torchmetrics" else None
+        if (name == "keras" and r.case.task == "regression" and r.case.y_true.ndim == 1
+                and not r.case.column_vector and m in ("mae", "mse", "mape")):
+            detail += (" Keras reduces over the last axis: with 1-D targets each update_state() call "
+                       "adds one batch average with weight 1, so the result is the unweighted mean of "
+                       "batch means, not the mean over samples (wrong whenever batches differ in size).")
+            fix = ("Reshape targets and predictions to (batch, 1) before update_state(), e.g. "
+                   "y[:, None]; then Keras averages over samples.")
         r.findings.append(Finding(f"stateful_{name}", f"{name}: update()/compute() differs from one-shot",
                                   detail, fix, ref))
 

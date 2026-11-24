@@ -248,6 +248,19 @@ evaluate has no average precision, `zero_division` or top-k; those cases show it
 
 **How a cause is confirmed:** each detector knows how to align one setting (for example pass `average="macro"` everywhere, or apply softmax first). metric-diff re-runs all libraries with the alignment and only says *confirmed* if they then agree. If nothing reproduces agreement, it says so: that is often a new bug worth reporting.
 
+## Tested on real model predictions
+
+Beyond the hand-made edge cases, metric-diff runs on real model predictions: logistic regression and ridge models trained on public datasets bundled with scikit-learn (breast_cancer, digits, wine, diabetes), evaluated on a 30% test split. Full tables: [benchmarks/RESULTS.md](benchmarks/RESULTS.md); reproduce with `python benchmarks/real_data.py` (no downloads, about a minute).
+
+What showed up on real data:
+
+- **Keras F1 on real probabilities: 0.787 instead of 0.967** (breast_cancer), because `F1Score()` has no threshold by default.
+- **Keras AUROC on real logits: 0.965 instead of 0.996** (breast_cancer) and **0.848 instead of 0.999** (digits, 10 classes), because Keras clips scores to [0, 1].
+- **Averaging per-batch R2 (batch size 32): 0.223 instead of 0.365** (diabetes), and per-batch F1 slightly off on every dataset.
+- **Keras MAE / MSE / MAPE accumulated over batches with 1-D targets average the batch means**, not the samples, so the result is wrong whenever the last batch is smaller; targets shaped `(batch, 1)` are fine. Found on the diabetes predictions.
+- torchmetrics' macro default for multiclass accuracy: 0.9721 vs 0.9722 on digits. Small, but a different number in a results table.
+- When the predictions are clean probabilities and settings are explicit, all five libraries agree to 4 decimals.
+
 ## Which number is right?
 
 Usually none is "wrong": the libraries answer slightly different questions. Pick the convention your field reports and state it:

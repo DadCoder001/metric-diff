@@ -111,6 +111,8 @@ def backend_opts(case: Case, name: str, detector_opts: dict | None = None) -> di
     opts = case.settings.for_backend(name)
     if case.task == "regression" and case.y_true.ndim == 2:
         opts["multi_output"] = True
+    if case.column_vector:
+        opts["column_vector"] = True  # Keras accumulates differently for (n, 1) and (n,)
     for k, v in (detector_opts or {}).items():
         if v is None:
             opts.pop(k, None)
@@ -260,18 +262,50 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
 
     relevant = [d for d in DETECTORS
                 if (d.requires is None or d.requires in names) and d.relevant(case, metric)]
+    differing = _differing(results, rtol, atol)
     for size in range(1, len(relevant) + 1):
+        fixes = []
         for combo in combinations(relevant, size):
             aligned = _run(bks, metric, case, combo)
             if _status(aligned, rtol, atol) == "agree":
-                report.confirmed = True
-                report.aligned = aligned
-                report.causes = [_cause(d, case, metric, names) for d in combo]
-                return report
+                fixes.append((combo, aligned))
+        if fixes:
+            # Several alignments can reproduce agreement (e.g. two causes that share a transform);
+            # explain with the one whose causes best match the libraries that actually disagree.
+            combo, aligned = max(fixes, key=lambda f: _fit(f[0], differing, names))
+            report.confirmed = True
+            report.aligned = aligned
+            report.causes = [_cause(d, case, metric, names) for d in combo]
+            return report
 
     # Nothing reproduced agreement: list what looks suspicious, clearly marked as unconfirmed.
     report.causes = [_cause(d, case, metric, names) for d in relevant]
     return report
+
+
+def _differing(results: dict[str, Result], rtol: float, atol: float) -> set[str]:
+    """Libraries that fail or differ from sklearn (or from the majority value)."""
+    ref = results.get("sklearn")
+    if ref is not None and ref.ok:
+        base = ref.value
+    else:
+        values = [round(r.value, 6) for r in results.values() if r.ok]
+        base = max(set(values), key=values.count) if values else None
+    out = set()
+    for name, r in results.items():
+        if r.skipped:
+            continue
+        if not r.ok or (base is not None and not _close([r.value, base], rtol, atol)):
+            out.add(name)
+    return out
+
+
+def _fit(combo, differing: set[str], names) -> int:
+    score = 0
+    for d in combo:
+        affected = set(d.affects) & set(names) if d.affects is not None else set(names)
+        score += len(affected & differing) - len(affected - differing)
+    return score
 
 
 def _cause(d: Detector, case, metric, names) -> Cause:

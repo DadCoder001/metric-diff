@@ -372,8 +372,8 @@ class _KerasStateful:
     def _arrays(self, y_true, y_pred):
         if self.task == "regression":
             yt, yp = y_true.astype(np.float32), y_pred.astype(np.float32)
-            if self.metric == "r2" and yt.ndim == 1:  # R2Score needs (n, outputs)
-                yt, yp = yt[:, None], yp[:, None]
+            if yt.ndim == 1 and (self.metric == "r2" or self.opts.get("column_vector")):
+                yt, yp = yt[:, None], yp[:, None]  # R2Score needs (n, outputs); keep the user's shape
             return yt, yp
         if self.task == "binary":
             yt = y_true.astype(np.float32)

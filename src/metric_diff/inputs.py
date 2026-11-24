@@ -174,6 +174,7 @@ class Case:
     pred_kind: str  # "labels" | "probs" | "logits"
     settings: Settings = field(default_factory=Settings)
     backends: tuple = ()  # names of the libraries being compared
+    column_vector: bool = False  # regression targets were given as (n, 1), not (n,)
 
     @property
     def n_samples(self) -> int:
@@ -257,6 +258,7 @@ def prepare_segmentation(y_true, y_pred, num_classes=None) -> Case:
 def prepare_regression(y_true, y_pred) -> Case:
     yt = to_numpy(y_true).astype(np.float64)
     yp = to_numpy(y_pred).astype(np.float64)
+    column = yt.ndim == 2 and yt.shape[1] == 1
     if yt.ndim == 2 and yt.shape[1] == 1:
         yt = yt[:, 0]
     if yp.ndim == 2 and yp.shape[1] == 1:
@@ -270,7 +272,7 @@ def prepare_regression(y_true, y_pred) -> Case:
         raise ValueError("inputs are empty")
     if not (np.all(np.isfinite(yt)) and np.all(np.isfinite(yp))):
         raise ValueError("inputs contain NaN or infinite values")
-    return Case(yt, yp, "regression", 0, "values")
+    return Case(yt, yp, "regression", 0, "values", column_vector=column)
 
 
 def _prepare(yt: np.ndarray, yp: np.ndarray) -> Case:
