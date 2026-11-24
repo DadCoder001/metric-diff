@@ -385,6 +385,96 @@ class KerasF1Threshold(Detector):
         return detail, fix
 
 
+class MapePercent(Detector):
+    key = "mape_percent"
+    title = "Keras MAPE is a percentage"
+    requires = "keras"
+    opts = {"mape_fraction": True}
+
+    def relevant(self, case, metric):
+        return metric == "mape"
+
+    def explain(self, case, metric, backends):
+        detail = ("keras.metrics.MeanAbsolutePercentageError returns a percentage (e.g. 28.0); "
+                  "sklearn and torchmetrics return a fraction (0.28).")
+        fix = "Divide the Keras value by 100 (or multiply the others by 100) before comparing."
+        return detail, fix
+
+
+class MapeZeroTarget(Detector):
+    key = "mape_zero_target"
+    title = "MAPE with zero targets"
+
+    def _zeros(self, case):
+        yt = case.y_true if case.y_true.ndim == 1 else case.y_true.reshape(len(case.y_true), -1)
+        return (yt == 0) if yt.ndim == 1 else (yt == 0).any(axis=1)
+
+    def relevant(self, case, metric):
+        return metric == "mape" and bool(self._zeros(case).any())
+
+    def transform(self, y_true, y_pred, case):
+        keep = ~self._zeros(case)
+        return y_true[keep], y_pred[keep]
+
+    def explain(self, case, metric, backends):
+        n = int(self._zeros(case).sum())
+        detail = (f"{n} target(s) are exactly 0, so the percentage error divides by zero. Each library "
+                  "divides by max(|y|, eps) with a different eps (sklearn about 2.2e-16, torchmetrics "
+                  "1.17e-6, Keras 1e-7), so the result is huge and different in every library.")
+        fix = ("MAPE is undefined when targets can be 0. Drop those samples, or use a metric that "
+               "handles zeros, such as WAPE (sum|y - p| / sum|y|) or symmetric MAPE.")
+        return detail, fix
+
+
+class R2ConstantTarget(Detector):
+    key = "r2_constant_target"
+    title = "R2 with a constant target"
+    requires = "torcheval"
+    opts = {"r2_force_finite": True}
+
+    def relevant(self, case, metric):
+        if metric != "r2":
+            return False
+        yt = case.y_true if case.y_true.ndim == 2 else case.y_true[:, None]
+        return bool(np.any(yt.max(axis=0) == yt.min(axis=0)))
+
+    def explain(self, case, metric, backends):
+        detail = ("y_true has zero variance, so R2 = 1 - SSE / 0. torcheval returns -inf (or NaN for "
+                  "a perfect prediction); sklearn (force_finite=True), torchmetrics and Keras return "
+                  "0.0 (1.0 if perfect).")
+        fix = ("R2 is not meaningful for a constant target: report MSE/MAE instead, or evaluate on a "
+               "split where the target varies.")
+        return detail, fix
+
+
+class Float32Precision(Detector):
+    key = "float32_precision"
+    title = "Float32 rounding on large values"
+    reference = "Lightning-AI/torchmetrics#3077"
+
+    def _ratio(self, case):
+        yt = case.y_true
+        spread = max(float(np.std(yt)), float(np.mean(np.abs(case.y_pred - yt))), 1e-300)
+        return float(np.max(np.abs(yt))) / spread
+
+    def relevant(self, case, metric):
+        return case.task == "regression" and metric != "mape" and self._ratio(case) > 100
+
+    def transform(self, y_true, y_pred, case):
+        # Shifting both by the same constant leaves R2, MAE, MSE and RMSE unchanged mathematically.
+        c = y_true.mean(axis=0)
+        return y_true - c, y_pred - c
+
+    def explain(self, case, metric, backends):
+        detail = (f"The values are large compared with their spread (max |y| is about {self._ratio(case):.0f}x "
+                  "the spread). torchmetrics, torcheval and Keras compute in float32, which keeps about "
+                  "7 significant digits, so the small differences that decide the metric are lost to "
+                  "rounding. sklearn computes in float64.")
+        fix = ("Compute in float64 (tensor.double() / dtype='float64'), or subtract a constant such as "
+               "the mean of y_true from both y_true and y_pred first; R2, MAE, MSE and RMSE are unchanged.")
+        return detail, fix
+
+
 class ZeroDivisionMismatch(Detector):
     key = "zero_division"
     title = "Different zero_division"
@@ -515,6 +605,10 @@ DETECTORS: list[Detector] = [
     KerasThresholdBins(),
     BinaryAverage(),
     AbsentClasses(),
+    MapeZeroTarget(),
+    MapePercent(),
+    R2ConstantTarget(),
+    Float32Precision(),
     ZeroDivisionMismatch(),
     TopKTies(),
     SklearnMultiClass(),
@@ -525,6 +619,10 @@ DETECTORS: list[Detector] = [
 def notes_for(case: Case, metric: str) -> list[str]:
     """Observations worth showing even when they don't cause a mismatch."""
     notes = []
+    if case.task == "regression":
+        if metric == "r2" and case.n_samples < 2:
+            notes.append("R2 needs at least 2 samples.")
+        return notes
     if metric in LABEL_METRICS and case.pred_kind != "labels" and not case.settings.values("top_k"):
         notes.append("sklearn has no threshold argument: metric-diff used `y_pred >= 0.5` (binary) "
                      "or argmax (multiclass), as most users do.")

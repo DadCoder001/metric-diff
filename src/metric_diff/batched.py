@@ -95,8 +95,11 @@ def _batches_to_arrays(batches) -> list[tuple[np.ndarray, np.ndarray]]:
 
 
 def _cast(case: Case, y_true, y_pred):
-    y_true = np.asarray(y_true).reshape(-1).astype(np.int64)
-    y_pred = np.asarray(y_pred)
+    y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
+    if case.task == "regression":
+        squeeze = (lambda a: a[:, 0] if a.ndim == 2 and a.shape[1] == 1 else a)
+        return squeeze(y_true).astype(np.float64), squeeze(y_pred).astype(np.float64)
+    y_true = y_true.reshape(-1).astype(np.int64)
     if y_pred.ndim == 2 and y_pred.shape[1] == 1:
         y_pred = y_pred[:, 0]
     y_pred = y_pred.astype(np.int64 if case.pred_kind == "labels" else np.float64)

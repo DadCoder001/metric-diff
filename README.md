@@ -157,22 +157,29 @@ Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so 
 | Different `zero_division` | what 0/0 becomes; torcheval and Keras always use 0 |
 | Tied scores at the top-k cut-off | torchmetrics keeps the lowest class indices; sklearn, torcheval and Keras count any tied class as a hit |
 | Per-batch averaging, padding, dropped samples | see `compare_batched` above |
+| **Regression:** Keras MAPE is a percentage | 28.0 in Keras vs 0.28 in sklearn and torchmetrics |
+| **Regression:** MAPE with zero targets | each library divides by a different tiny epsilon: 7.5e14 vs 142,450 vs 1.7e8 |
+| **Regression:** R2 with a constant target | torcheval returns -inf (NaN if perfect); others return 0.0 (1.0) |
+| **Regression:** float32 rounding on large values | R2 of 1.0000001 instead of 0.989 when values are about 1e6 (torchmetrics#3077) |
 
-Metrics: `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`. Tasks: binary and multiclass.
+Metrics:
+
+- **Classification** (binary and multiclass): `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`
+- **Regression** (single or multi-output): `r2`, `mae`, `mse`, `rmse`, `mape` (torcheval only has `r2` and `mse`)
 
 **How a cause is confirmed:** each detector knows how to align one setting (for example pass `average="macro"` everywhere, or apply softmax first). metric-diff re-runs all libraries with the alignment and only says *confirmed* if they then agree. If nothing reproduces agreement, it says so: that is often a new bug worth reporting.
 
 ## Limitations
 
 - Settings supported: `average` (micro / macro / weighted), `threshold`, `pos_label`, `num_classes`, `zero_division`, `top_k` (accuracy). Not yet: `ignore_index` (masking the samples gives the same result in every library), sample weights, per-class output (`average=None`).
-- No multilabel, regression, top-k, sample weights or per-class output yet.
+- No multilabel, sample weights or per-class output yet. Regression has no settings yet (e.g. `multioutput`).
 - Explanations describe the library versions tested (sklearn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15). Tests check the key defaults so they fail loudly when a library changes.
 
 ## Roadmap
 
 - More settings: sample weights, per-class output
 - Hugging Face `evaluate` backend
-- Regression metrics (R², MAE, MSE, MAPE), multilabel, top-k
+- Multilabel classification; regression settings (`multioutput`, sample weights)
 - Segmentation (Dice / IoU) and detection mAP
 - pytest plugin
 

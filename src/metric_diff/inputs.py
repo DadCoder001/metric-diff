@@ -94,11 +94,19 @@ def _check_threshold(t):
         raise ValueError(f"threshold must be between 0 and 1 (got {t})")
     return t
 
-METRICS = ("accuracy", "precision", "recall", "f1", "auroc", "average_precision")
+CLASSIFICATION_METRICS = ("accuracy", "precision", "recall", "f1", "auroc", "average_precision")
+REGRESSION_METRICS = ("r2", "mae", "mse", "rmse", "mape")
+METRICS = CLASSIFICATION_METRICS + REGRESSION_METRICS
 LABEL_METRICS = ("accuracy", "precision", "recall", "f1")
 RANKING_METRICS = ("auroc", "average_precision")
 
 _ALIASES = {
+    "r2_score": "r2",
+    "r_squared": "r2",
+    "mean_absolute_error": "mae",
+    "mean_squared_error": "mse",
+    "root_mean_squared_error": "rmse",
+    "mean_absolute_percentage_error": "mape",
     "acc": "accuracy",
     "f1_score": "f1",
     "f1score": "f1",
@@ -148,6 +156,9 @@ class Case:
         return int(self.y_true.shape[0])
 
     def describe(self) -> str:
+        if self.task == "regression":
+            outputs = "" if self.y_true.ndim == 1 else f", {self.y_true.shape[1]} outputs"
+            return f"regression, {self.n_samples} samples{outputs}"
         kinds = {
             "labels": "predicted labels",
             "probs": "probabilities",
@@ -191,6 +202,25 @@ def prepare(y_true, y_pred, *, pos_label=None, num_classes=None) -> Case:
                 raise ValueError(f"num_classes={num_classes} but the data contains label {case.num_classes - 1}")
             case = Case(case.y_true, case.y_pred, "multiclass", num_classes, case.pred_kind)
     return case
+
+
+def prepare_regression(y_true, y_pred) -> Case:
+    yt = to_numpy(y_true).astype(np.float64)
+    yp = to_numpy(y_pred).astype(np.float64)
+    if yt.ndim == 2 and yt.shape[1] == 1:
+        yt = yt[:, 0]
+    if yp.ndim == 2 and yp.shape[1] == 1:
+        yp = yp[:, 0]
+    if yt.ndim not in (1, 2):
+        raise ValueError("y_true must be 1-D, or 2-D (n_samples, n_outputs) for multi-output regression")
+    if yt.shape != yp.shape:
+        raise ValueError(f"y_true has shape {yt.shape} but y_pred has shape {yp.shape}; "
+                         "they must match (a (n, 1) vs (n,) mix silently broadcasts in plain torch/numpy)")
+    if yt.shape[0] == 0:
+        raise ValueError("inputs are empty")
+    if not (np.all(np.isfinite(yt)) and np.all(np.isfinite(yp))):
+        raise ValueError("inputs contain NaN or infinite values")
+    return Case(yt, yp, "regression", 0, "values")
 
 
 def _prepare(yt: np.ndarray, yp: np.ndarray) -> Case:

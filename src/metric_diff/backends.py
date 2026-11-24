@@ -125,6 +125,13 @@ class SklearnBackend(Backend):
     def compute(self, metric, task, y_true, y_pred, num_classes, opts):
         import sklearn.metrics as skm
 
+        if task == "regression":
+            if metric == "rmse":
+                return float(np.sqrt(skm.mean_squared_error(y_true, y_pred)))
+            fn = {"r2": skm.r2_score, "mae": skm.mean_absolute_error, "mse": skm.mean_squared_error,
+                  "mape": skm.mean_absolute_percentage_error}[metric]
+            return float(fn(y_true, y_pred))
+
         avg = opts.get("average")
         if metric == "accuracy" and opts.get("top_k"):
             return float(skm.top_k_accuracy_score(y_true, y_pred, k=opts["top_k"],
@@ -183,6 +190,14 @@ def _tensors(y_true, y_pred):
     return target, preds
 
 
+def _float_tensors(y_true, y_pred):
+    """Regression inputs in float32, the dtype people train and evaluate in."""
+    import torch
+
+    return (torch.as_tensor(y_true, dtype=torch.float32),
+            torch.as_tensor(y_pred, dtype=torch.float32))
+
+
 def _torch_kwargs(metric, task, num_classes, opts, lib="torchmetrics"):
     kw = {}
     if task == "binary":
@@ -199,6 +214,13 @@ def _torch_kwargs(metric, task, num_classes, opts, lib="torchmetrics"):
     return kw
 
 
+def _r2_force_finite(value, y_true, y_pred):
+    """What sklearn's force_finite=True does for a constant target: 1.0 if perfect, else 0.0."""
+    if value != value or value in (float("inf"), float("-inf")):
+        return 1.0 if np.allclose(y_true, y_pred) else 0.0
+    return value
+
+
 def _always_zero_division(lib, metric, opts):
     if metric in ("precision", "recall", "f1") and opts.get("zero_division", 0) != 0:
         return f"{lib} has no zero_division setting (always 0)"
@@ -208,10 +230,14 @@ def _always_zero_division(lib, metric, opts):
 class _TorchStateful:
     """Wraps a torchmetrics / torcheval metric object."""
 
-    def __init__(self, obj, metric):
-        self.obj, self.metric = obj, metric
+    def __init__(self, obj, metric, regression=False):
+        self.obj, self.metric, self.regression = obj, metric, regression
 
     def update(self, y_true, y_pred):
+        if self.regression:
+            target, preds = _float_tensors(y_true, y_pred)
+            self.obj.update(preds, target)
+            return
         target, preds = _tensors(y_true, y_pred)
         if self.metric not in LABEL_METRICS:
             preds = preds.float()
@@ -226,6 +252,16 @@ class TorchmetricsBackend(Backend):
     module = "torchmetrics"
 
     def compute(self, metric, task, y_true, y_pred, num_classes, opts):
+        if task == "regression":
+            import torchmetrics.functional as R
+
+            target, preds = _float_tensors(y_true, y_pred)
+            if metric == "rmse":
+                return float(R.mean_squared_error(preds, target, squared=False))
+            fn = {"r2": R.r2_score, "mae": R.mean_absolute_error, "mse": R.mean_squared_error,
+                  "mape": R.mean_absolute_percentage_error}[metric]
+            return float(fn(preds, target))
+
         import torchmetrics.functional.classification as F
 
         target, preds = _tensors(y_true, y_pred)
@@ -236,6 +272,18 @@ class TorchmetricsBackend(Backend):
         return float(fn(preds, target, **_torch_kwargs(metric, task, num_classes, opts)))
 
     def stateful(self, metric, task, num_classes, opts):
+        if task == "regression":
+            import torchmetrics.regression as R
+
+            if metric == "r2":
+                obj = R.R2Score()
+            elif metric == "rmse":
+                obj = R.MeanSquaredError(squared=False)
+            else:
+                obj = {"mae": R.MeanAbsoluteError, "mse": R.MeanSquaredError,
+                       "mape": R.MeanAbsolutePercentageError}[metric]()
+            return _TorchStateful(obj, metric, regression=True)
+
         import torchmetrics.classification as C
 
         cls_name = _TORCH_NAMES.get(metric, "AveragePrecision")
@@ -255,6 +303,12 @@ class TorchevalBackend(Backend):
     def compute(self, metric, task, y_true, y_pred, num_classes, opts):
         import torcheval.metrics.functional as F
 
+        if task == "regression":
+            target, preds = _float_tensors(y_true, y_pred)
+            fn = {"r2": F.r2_score, "mse": F.mean_squared_error}[metric]
+            value = float(fn(preds, target))
+            return _r2_force_finite(value, y_true, y_pred) if metric == "r2" and opts.get("r2_force_finite") else value
+
         target, preds = _tensors(y_true, y_pred)
         if metric not in LABEL_METRICS:
             preds = preds.float()
@@ -265,11 +319,17 @@ class TorchevalBackend(Backend):
     def stateful(self, metric, task, num_classes, opts):
         import torcheval.metrics as M
 
+        if task == "regression":
+            obj = {"r2": M.R2Score, "mse": M.MeanSquaredError}[metric]()
+            return _TorchStateful(obj, metric, regression=True)
+
         cls_name = {"average_precision": "AUPRC"}.get(metric, _TORCH_NAMES.get(metric))
         cls = getattr(M, f"{task.capitalize()}{cls_name}")
         return _TorchStateful(cls(**_torch_kwargs(metric, task, num_classes, opts, "torcheval")), metric)
 
     def unsupported(self, metric, task, opts):
+        if task == "regression" and metric not in ("r2", "mse"):
+            return f"torcheval has no {metric} metric"
         return _always_zero_division("torcheval", metric, opts)
 
 
@@ -291,6 +351,11 @@ class _KerasStateful:
         self.num_classes, self.opts = num_classes, opts
 
     def _arrays(self, y_true, y_pred):
+        if self.task == "regression":
+            yt, yp = y_true.astype(np.float32), y_pred.astype(np.float32)
+            if self.metric == "r2" and yt.ndim == 1:  # R2Score needs (n, outputs)
+                yt, yp = yt[:, None], yp[:, None]
+            return yt, yp
         if self.task == "binary":
             yt = y_true.astype(np.float32)
             yp = y_pred.astype(np.float32)
@@ -318,7 +383,10 @@ class _KerasStateful:
         v = values[0]
         if v.size != 1:
             raise ValueError(f"returned {v.size} values, one per class (average=None by default)")
-        return float(v.item())
+        value = float(v.item())
+        if self.metric == "mape" and self.opts.get("mape_fraction"):
+            value /= 100.0
+        return value
 
 
 class KerasBackend(Backend):
@@ -348,6 +416,11 @@ class KerasBackend(Backend):
         M = keras.metrics
         avg = opts.get("average")
         thr = opts.get("threshold")
+
+        if task == "regression":
+            obj = {"r2": M.R2Score, "mae": M.MeanAbsoluteError, "mse": M.MeanSquaredError,
+                   "rmse": M.RootMeanSquaredError, "mape": M.MeanAbsolutePercentageError}[metric]()
+            return _KerasStateful([obj], metric, task, num_classes, opts)
 
         if metric in ("auroc", "average_precision"):
             kw = {}

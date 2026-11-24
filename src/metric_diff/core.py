@@ -10,7 +10,8 @@ import numpy as np
 
 from . import backends as _backends
 from .detectors import DETECTORS, Detector, notes_for
-from .inputs import LABEL_METRICS, Case, make_settings, normalise_metric, prepare
+from .inputs import (LABEL_METRICS, REGRESSION_METRICS, Case, make_settings, normalise_metric, prepare,
+                     prepare_regression)
 
 
 @dataclass
@@ -155,6 +156,11 @@ def build_case(metric, y_true, y_pred, bks, *, average=None, threshold=None, pos
             raise ValueError(f"settings given for {lib!r}, which is not being compared ({', '.join(names)})")
     s = make_settings(average, threshold, settings, explicit_classes=num_classes is not None,
                       zero_division=zero_division, top_k=top_k)
+    if metric in REGRESSION_METRICS:
+        if not s.empty or pos_label is not None:
+            raise ValueError("average, threshold, pos_label, num_classes, zero_division and top_k "
+                             "apply to classification metrics only")
+        return dataclasses.replace(prepare_regression(y_true, y_pred), backends=names)
     case = prepare(y_true, y_pred, pos_label=pos_label, num_classes=num_classes)
     if s.values("top_k"):
         if metric != "accuracy":
@@ -175,9 +181,11 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
 
     Parameters
     ----------
-    metric: one of accuracy, precision, recall, f1, auroc, average_precision (aliases accepted).
-    y_true: 1-D integer labels.
-    y_pred: 1-D labels or binary scores, or 2-D (n_samples, n_classes) multiclass scores.
+    metric: classification: accuracy, precision, recall, f1, auroc, average_precision;
+        regression: r2, mae, mse, rmse, mape (aliases accepted).
+    y_true: classification: 1-D integer labels. Regression: 1-D values, or 2-D for multi-output.
+    y_pred: classification: 1-D labels or binary scores, or 2-D (n_samples, n_classes)
+        multiclass scores. Regression: same shape as y_true.
         Lists, numpy arrays and torch tensors are accepted.
     average: "micro", "macro" or "weighted", passed to every library (multiclass).
     threshold: decision threshold for binary label metrics, passed to every library.
