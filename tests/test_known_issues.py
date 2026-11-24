@@ -11,7 +11,14 @@ import pytest
 pytest.importorskip("torchmetrics")
 pytest.importorskip("torcheval")
 
-from metric_diff import compare  # noqa: E402
+from metric_diff import compare as _compare  # noqa: E402
+
+# These cases pin the three torch/sklearn libraries; Keras has its own tests.
+TORCH_AND_SKLEARN = ["sklearn", "torchmetrics", "torcheval"]
+
+
+def compare(*args, **kwargs):
+    return _compare(*args, backends=TORCH_AND_SKLEARN, **kwargs)
 
 
 def keys(report):

@@ -32,9 +32,13 @@ class Detector:
     title = ""
     reference: str | None = None
     opts: dict = {}
+    requires: str | None = None  # only relevant when this backend is being compared
 
     def relevant(self, case: Case, metric: str) -> bool:
         raise NotImplementedError
+
+    def options(self, case: Case, metric: str) -> dict:
+        return dict(self.opts)
 
     def transform(self, y_true, y_pred, case: Case):
         return y_true, y_pred
@@ -69,8 +73,9 @@ class PositiveLabel(Detector):
         pos = int(labels.max())
         detail = (
             f"The labels are {_fmt_set(labels)}. sklearn treats 1 as the positive class by "
-            "default (pos_label=1), torchmetrics only accepts {0, 1} and raises, and torcheval "
-            "does not validate the labels and can return impossible values such as F1 > 1. "
+            "default (pos_label=1), torchmetrics only accepts {0, 1} and raises, and torcheval"
+            + (" and Keras do" if "keras" in backends else " does")
+            + " not validate the labels and can return impossible values such as F1 > 1. "
             f"To compare like with like, metric-diff mapped {pos} -> 1 and everything else -> 0."
         )
         fix = (
@@ -137,9 +142,10 @@ class BinaryLogits(Detector):
     def explain(self, case, metric, backends):
         detail = (
             "Predictions contain values outside [0, 1], so they look like logits. torchmetrics "
-            "detects this and applies sigmoid before thresholding at 0.5. torcheval, and the usual "
-            "`y_pred >= 0.5` for sklearn, threshold the raw logits at 0.5, which is a probability "
-            "of about 0.62."
+            "detects this and applies sigmoid before thresholding at 0.5. torcheval"
+            + (", Keras" if "keras" in backends else "")
+            + " and the usual `y_pred >= 0.5` for sklearn threshold the raw logits at 0.5, which "
+            "is a probability of about 0.62."
         )
         fix = (
             "Convert to probabilities yourself before every library (torch.sigmoid(logits)), "
@@ -179,6 +185,9 @@ class SigmoidSaturation(Detector):
             "so their ranking is lost "
             f"and {metric} drifts toward 0.5. sklearn and torcheval rank the raw scores."
         )
+        if "keras" in backends:
+            detail += (" Keras AUC also assumes probabilities and clips values outside [0, 1] "
+                       "(use from_logits=True).")
         fix = (
             "For ranking metrics pass the raw scores to sklearn, or rescale monotonically before "
             "torchmetrics, e.g. torch.sigmoid((logits - logits.mean()).double())."
@@ -204,10 +213,87 @@ class ThresholdTie(Detector):
     def explain(self, case, metric, backends):
         k = int(np.sum(self._probs(case) == 0.5))
         detail = (
-            f"{k} prediction(s) are exactly 0.5. torchmetrics counts a sample as positive when "
-            "score > 0.5, torcheval when score >= 0.5 (and so does `y_pred >= 0.5` for sklearn)."
+            f"{k} prediction(s) are exactly 0.5. torchmetrics"
+            + (" and Keras count" if "keras" in backends else " counts")
+            + " a sample as positive when score > 0.5, torcheval when score >= 0.5 "
+            "(and so does `y_pred >= 0.5` for sklearn)."
         )
         fix = "Threshold explicitly yourself, y_hat = (scores >= 0.5), and pass labels to every library."
+        return detail, fix
+
+
+class KerasLogits(Detector):
+    key = "keras_logits"
+    title = "Keras AUC expects probabilities"
+    requires = "keras"
+
+    def relevant(self, case, metric):
+        return (case.task == "binary" and case.pred_kind == "logits" and metric in RANKING_METRICS
+                and not SigmoidSaturation().relevant(case, metric))
+
+    def transform(self, y_true, y_pred, case):
+        from scipy.stats import rankdata
+
+        return y_true, rankdata(y_pred, method="average") / len(y_pred)
+
+    def explain(self, case, metric, backends):
+        detail = ("The scores are logits (values outside [0, 1]). keras.metrics.AUC treats its "
+                  "input as probabilities, so values outside [0, 1] are clipped and their ranking "
+                  "is lost. sklearn, torchmetrics and torcheval handle raw scores.")
+        fix = "Pass from_logits=True: keras.metrics.AUC(from_logits=True), or apply sigmoid first."
+        return detail, fix
+
+
+class KerasThresholdBins(Detector):
+    key = "keras_bins"
+    title = "Keras approximates AUC with 200 thresholds"
+    requires = "keras"
+    opts = {"exact_thresholds": True}
+
+    def relevant(self, case, metric):
+        return metric in RANKING_METRICS
+
+    def explain(self, case, metric, backends):
+        detail = ("keras.metrics.AUC estimates the curve from num_thresholds=200 evenly spaced "
+                  "thresholds; the other libraries use every distinct score, so Keras is off by "
+                  "a small, data-dependent amount.")
+        fix = ("Raise num_thresholds (e.g. AUC(num_thresholds=2000)), pass the sorted unique scores "
+               "as thresholds=..., or report the final number with sklearn.")
+        return detail, fix
+
+
+class KerasPRSummation(Detector):
+    key = "keras_pr"
+    title = "Keras PR-AUC is not average precision"
+    requires = "keras"
+    opts = {"exact_thresholds": True, "pr_summation": "majoring"}
+
+    def relevant(self, case, metric):
+        return metric == "average_precision"
+
+    def explain(self, case, metric, backends):
+        detail = ("keras.metrics.AUC(curve='PR') integrates an interpolated precision-recall curve "
+                  "(summation_method='interpolation', 200 thresholds). sklearn, torchmetrics and "
+                  "torcheval compute average precision, a step-wise sum, which is a different number.")
+        fix = ("Use AUC(curve='PR', summation_method='majoring', thresholds=<sorted unique scores>) "
+               "to match average precision, or compute it with sklearn.")
+        return detail, fix
+
+
+class KerasF1Threshold(Detector):
+    key = "keras_f1_threshold"
+    title = "Keras F1Score has no threshold by default"
+    requires = "keras"
+    opts = {"threshold": 0.5}
+
+    def relevant(self, case, metric):
+        return case.task == "binary" and metric == "f1"
+
+    def explain(self, case, metric, backends):
+        detail = ("keras.metrics.F1Score(threshold=None) assumes one column per class and marks "
+                  "the highest column of each sample as positive. With a single binary column, "
+                  "every sample counts as positive.")
+        fix = "Pass a threshold: keras.metrics.F1Score(threshold=0.5)."
         return detail, fix
 
 
@@ -215,10 +301,14 @@ class Averaging(Detector):
     key = "average"
     title = "Different default averaging"
     reference = "Lightning-AI/torchmetrics#746, meta-pytorch/torcheval#191"
-    opts = {"average": "macro", "multi_class": "ovr"}
 
     def relevant(self, case, metric):
         return case.task == "multiclass"
+
+    def options(self, case, metric):
+        if metric == "accuracy":  # every library supports micro (plain) accuracy
+            return {"average": "micro"}
+        return {"average": "macro", "multi_class": "ovr"}
 
     def explain(self, case, metric, backends):
         lines = [f"{b}: {DEFAULT_AVERAGE[b][metric]}" for b in backends if b in DEFAULT_AVERAGE]
@@ -226,6 +316,8 @@ class Averaging(Detector):
         fix = 'Pass the averaging explicitly to every library, e.g. average="macro" (or "micro").'
         if metric == "accuracy":
             fix += " Macro accuracy in sklearn is balanced_accuracy_score."
+        if "keras" in backends and metric in ("precision", "recall"):
+            fix += " In Keras use top_k=1 so the predicted class is the argmax."
         if metric == "auroc":
             fix += " sklearn also needs multi_class=\"ovr\"."
         return detail, fix
@@ -237,8 +329,12 @@ DETECTORS: list[Detector] = [
     RowNormalisation(),
     Softmax(),
     SigmoidSaturation(),
+    KerasLogits(),
     BinaryLogits(),
     ThresholdTie(),
+    KerasF1Threshold(),
+    KerasPRSummation(),
+    KerasThresholdBins(),
     Averaging(),
 ]
 

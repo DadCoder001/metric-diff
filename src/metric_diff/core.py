@@ -100,7 +100,7 @@ def _run(bks, metric, case, detectors: tuple[Detector, ...] = ()) -> dict[str, R
     opts: dict = {}
     for d in detectors:
         y_true, y_pred = d.transform(y_true, y_pred, case)
-        opts.update(d.opts)
+        opts.update(d.options(case, metric))
     y_true, y_pred = _final_inputs(metric, case, y_true, y_pred)
     out = {}
     for b in bks:
@@ -133,7 +133,8 @@ def compare(metric: str, y_true, y_pred, *, backends: list[str] | None = None,
     if status != "mismatch":
         return report
 
-    relevant = [d for d in DETECTORS if d.relevant(case, metric)]
+    relevant = [d for d in DETECTORS
+                if (d.requires is None or d.requires in names) and d.relevant(case, metric)]
     for size in range(1, len(relevant) + 1):
         for combo in combinations(relevant, size):
             aligned = _run(bks, metric, case, combo)

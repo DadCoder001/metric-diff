@@ -67,6 +67,51 @@ def render(report: "Report") -> str:
     return "\n".join(lines)
 
 
+def render_batched(report) -> str:
+    m = report.metric
+    n_b = len(report.batch_sizes)
+    sizes = sorted(set(report.batch_sizes))
+    size_txt = f"batch size {sizes[0]}" if len(sizes) == 1 else f"batch sizes {sizes[0]}-{sizes[-1]}"
+    lines = [f"metric-diff batched: {m} ({report.case.task}, {report.n_samples} samples in {n_b} "
+             f"batches, {size_txt})", ""]
+
+    def fmt(v):
+        return f"{v:.4f}" if v is not None else "n/a"
+
+    rows = [(f"whole dataset ({report.reference_name})", fmt(report.reference.value)
+             if report.reference.ok else f"error: {report.reference.error}", "reference")]
+    rows.append(("mean of per-batch values", fmt(report.batch_mean), "naive average of batch scores"))
+    rows.append(("batch-size-weighted mean", fmt(report.weighted_mean),
+                 "Lightning self.log(value, on_epoch=True)"))
+    for name, r in report.stateful.items():
+        rows.append((f"{name} update()/compute()", fmt(r.value) if r.ok else f"error: {r.error}",
+                     "accumulated"))
+    width = max(len(a) for a, _, _ in rows) + 2
+    for label, val, note in rows:
+        lines.append(f"  {label:<{width}} {val:<10} {note}")
+    lines.append("")
+
+    if report.ok:
+        lines.append("OK: batching does not change the result.")
+    else:
+        n = len(report.findings)
+        lines.append(f"PROBLEM: {n} issue{'s' if n > 1 else ''} with how the metric is aggregated")
+    for i, f in enumerate(report.findings, 1):
+        lines.append("")
+        lines.append(f"  {i}. {f.title}")
+        lines.append(_wrap(f.detail, "     "))
+        lines.append(_wrap("fix: " + f.fix, "     "))
+        if f.reference:
+            lines.append(f"     see: {f.reference}")
+
+    if report.dataset.status == "mismatch":
+        lines.append("")
+        lines.append(_wrap("note: the libraries also disagree with each other on the whole dataset. "
+                           f"Run metric-diff without --batch-size (or compare('{m}', ...)) for the cause.",
+                           "  "))
+    return "\n".join(lines)
+
+
 def _is_outlier(value: float, values: list[float]) -> bool:
     """Mark values that differ from the most common value."""
     rounded = [round(v, 6) for v in values]
