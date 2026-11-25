@@ -2,7 +2,7 @@
 
 All notable changes are listed here. This project follows [semantic versioning](https://semver.org/); while the version starts with 0, minor releases may change behaviour.
 
-## Unreleased
+## 0.1.0a2 (2026-11-25)
 
 ### Test-suite assertions
 - `metric_diff.testing.assert_metrics_agree()`: fails unless every installed library agrees (or differs only for causes you `allow`), optionally checks an `expected` value, and requires at least `min_libraries` libraries so a test can't pass because one isn't installed. Failures raise `MetricMismatch` (an `AssertionError`) with the full report.
