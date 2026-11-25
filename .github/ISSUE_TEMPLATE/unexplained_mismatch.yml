@@ -1,0 +1,37 @@
+name: Unexplained mismatch
+description: metric-diff says "no known cause reproduces agreement", or explains it wrongly
+title: "[mismatch] <metric>: <library> differs from <library>"
+labels: ["mismatch", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Every confirmed report becomes a new detector and a new case in the conformance matrix.
+        Please don't paste private data: a small synthetic example that reproduces the difference is perfect.
+  - type: textarea
+    id: report
+    attributes:
+      label: metric-diff report
+      description: Output of `metric-diff <metric> --true ... --pred ... --json`, or `print(compare(...).to_dict())`.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The y_true / y_pred (or a script that builds them) and the call you made.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: Which value you think is right, and why (documentation, a paper, another library).
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: The report includes library versions; add your Python version and OS.
+      placeholder: Python 3.12, Ubuntu 24.04

@@ -1,0 +1,30 @@
+name: Bug in metric-diff
+description: metric-diff crashes, rejects valid input, or reports something wrong about itself
+title: "[bug] <short description>"
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Error / traceback
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: "Output of: python -c \"import metric_diff, sys; print(metric_diff.__version__, sys.version)\" and your OS"
+    validations:
+      required: true

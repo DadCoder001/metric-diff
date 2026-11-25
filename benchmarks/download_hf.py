@@ -1,5 +1,8 @@
 """Download only the files approved: SST-2 validation, DistilBERT SST-2 (safetensors),
-SegFormer-b0 ADE (safetensors), ADE20K validation parquet. Into the Hugging Face cache."""
+SegFormer-b0 ADE (safetensors), ADE20K validation parquet. Into the Hugging Face cache.
+
+These are downloaded from the Hugging Face Hub, not redistributed by metric-diff; their own
+licences and terms of use apply (ADE20K has terms of use for research purposes)."""
 import os
 import warnings
 warnings.filterwarnings("ignore")

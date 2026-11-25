@@ -1,5 +1,9 @@
 # metric-diff
 
+[![tests](https://github.com/DadCoder001/metric-diff/actions/workflows/tests.yml/badge.svg)](https://github.com/DadCoder001/metric-diff/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
+
 **Your F1 score is 0.75 in torchmetrics, 0.70 in torcheval, a vector in Keras and an error in sklearn. Which one is right, and why?**
 
 `metric-diff` computes the same metric with **scikit-learn**, **torchmetrics**, **torcheval**, **Keras 3**, **Hugging Face evaluate** and **MONAI** (segmentation). When they disagree, it finds the setting that causes it, **re-runs every library with that setting aligned to confirm**, and tells you how to fix your code.
@@ -185,7 +189,7 @@ seg-iou-default             0.6530    0.6308 x                 0.6530      0.653
 - **Upgrade safety.** Save a baseline, then re-run after upgrading a library. If torchmetrics 1.9 -> 2.0 changes AUROC on saturated logits, or macro F1 with an unseen class, you see that exact cell change, the day you upgrade instead of months later when results quietly shift between experiments.
 - **Choosing or switching libraries.** Moving a pipeline from Keras to PyTorch, or from sklearn to torchmetrics? See every known difference before you migrate, not one bug report at a time.
 - **Reproducible reporting.** Attach the Markdown matrix to a paper, model card or internal report: "computed with torchmetrics 1.9, which differs from sklearn in these documented ways". Reviewers and other teams can compare numbers fairly.
-- **Finding real bugs.** Red cells on control cases are library bugs; torchmetrics#2819 and the torcheval / Keras F1 > 1 on labels {1, 2} show up exactly like that.
+- **Spotting likely bugs.** Red cells on control cases point at library behaviour worth a closer look: the open torchmetrics#2819, and F1 values above 1 from torcheval and Keras on labels {1, 2} (which we're reporting upstream), show up exactly like that.
 - **Shared knowledge.** Every reported mismatch becomes a new edge case, so the matrix keeps growing and everyone's CI checks it.
 
 ### Who it's for
@@ -267,7 +271,7 @@ And on pretrained Hugging Face models ([benchmarks/RESULTS_HF.md](benchmarks/RES
 
 - **DistilBERT on SST-2 (872 sentences):** Keras F1 **0.675 instead of 0.914**; Keras AUROC **0.959** on probabilities (its 200 fixed thresholds can't resolve confident predictions bunched near 0 and 1) and **0.911** on logits, vs **0.972** everywhere else; Keras PR-AUC 0.943 vs average precision 0.973. On the model's 2-column output, sklearn raises and wants `scores[:, 1]`.
 - **SegFormer on ADE20K (200 validation images, 150 classes):** the same predictions give **Dice 0.284** (all pixels pooled: sklearn), **0.388** (per image: torchmetrics) and **0.538** (MONAI's `ignore_empty=True` default); **IoU 0.209 / 0.335 / 0.464**. MONAI's default alone adds about 0.15 by ignoring false positives on images without the class.
-- **torchmetrics' own two IoU APIs disagree:** the `MeanIoU` class gives 0.304 and the `mean_iou` function 0.335 on the same masks, because the class pools all (image, class) pairs while the function averages per image. Found by the batch check; not caused by batching.
+- **torchmetrics' own two IoU APIs disagree:** the `MeanIoU` class gives 0.304 and the `mean_iou` function 0.335 on the same masks, because the class pools all (image, class) pairs while the function averages per image. Found by the batch check; not caused by batching. We're sharing this with the torchmetrics maintainers.
 - Running on real data also made metric-diff faster: segmentation now processes images in chunks (one-hot masks over 150 classes would need gigabytes) and uses MONAI's label-map Dice path (3x faster, identical values).
 
 ## Which number is right?
@@ -294,8 +298,10 @@ Usually none is "wrong": the libraries answer slightly different questions. Pick
 
 ## Contributing
 
-Every known mismatch lives in `src/metric_diff/cases.py` (the matrix) and in `tests/` as a regression case linked to its upstream issue. Found a new one? Open an issue with the `--json` output.
+Every known mismatch lives in `src/metric_diff/cases.py` (the matrix) and in `tests/` as a regression case linked to its upstream issue. Found a new one? [Open an issue](https://github.com/DadCoder001/metric-diff/issues/new/choose) with the `--json` output. Questions and ideas go to [Discussions](https://github.com/DadCoder001/metric-diff/discussions).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a detector or an edge case, and the [Code of Conduct](CODE_OF_CONDUCT.md). Changes are listed in the [changelog](CHANGELOG.md).
 
 ## License
 
-MIT
+[MIT](LICENSE)

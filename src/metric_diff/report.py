@@ -65,8 +65,8 @@ def render(report: "Report") -> str:
         lines.append(f"  confirmed: after aligning these settings, every library reports {vals[0]}")
     elif report.status == "mismatch":
         lines.append("")
-        lines.append("  This may be a new bug: please report it to the metric-diff issue tracker,")
-        lines.append("  including this output (run with --json for the machine-readable form).")
+        lines.append("  This may be a new bug. Please report it, with this output (--json for the")
+        lines.append("  machine-readable form): https://github.com/DadCoder001/metric-diff/issues")
 
     if report.notes:
         lines.append("")

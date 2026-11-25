@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/DadCoder001/metric-diff/discussions
+    about: Ask how to use metric-diff, share results, or discuss which metric convention to report.
+  - name: User guide
+    url: https://github.com/DadCoder001/metric-diff/blob/main/docs/USER_GUIDE.md
+    about: Scenarios ("my F1 doesn't match sklearn", "my Dice differs from MONAI") with snippets to run.

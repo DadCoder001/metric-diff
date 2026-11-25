@@ -3,6 +3,7 @@
 - Text: `distilbert/distilbert-base-uncased-finetuned-sst-2-english` on SST-2 validation.
 - Segmentation: `nvidia/segformer-b0-finetuned-ade-512-512` on ADE20K validation images, 128x128 model output. Full-ADE classes mapped to the model's 150 by name cover 91% of labelled pixels; the rest are ignored (class 0, `include_background=False`).
 - Reproduce: `python benchmarks/download_hf.py` (about 720 MB, once), then `python benchmarks/hf_data.py`.
+- Datasets and models are downloaded from the Hugging Face Hub, not redistributed; their own licences and terms of use apply.
 
 Versions: sklearn 1.9.1, torchmetrics 1.9.0, torcheval 0.0.7, keras 3.15.1, evaluate 0.4.6, monai 1.6.2, transformers 5.24.0
 

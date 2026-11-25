@@ -4,19 +4,25 @@ build-backend = "hatchling.build"
 
 [project]
 name = "metric-diff"
-version = "0.1.0.dev0"
-description = "Find out why sklearn, torchmetrics and torcheval disagree on the same metric, and how to fix it."
+version = "0.1.0a1"
+description = "Find out why ML metric libraries (scikit-learn, torchmetrics, torcheval, Keras, Hugging Face evaluate, MONAI) disagree on the same metric, and how to fix it."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [{ name = "metric-diff contributors" }]
-keywords = ["metrics", "machine-learning", "debugging", "scikit-learn", "torchmetrics", "torcheval"]
+keywords = ["metrics", "machine-learning", "debugging", "evaluation", "scikit-learn", "torchmetrics",
+            "torcheval", "keras", "monai", "segmentation", "reproducibility"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Topic :: Software Development :: Debuggers",
 ]
@@ -24,11 +30,18 @@ dependencies = ["numpy>=1.23", "scikit-learn>=1.3"]
 
 [project.optional-dependencies]
 torch = ["torch>=2.0", "torchmetrics>=1.0", "torcheval>=0.0.7"]
-keras = ["keras>=3.0"]
+keras = ["keras>=3.0", "torch>=2.0"]  # Keras needs an engine; torch is used when TensorFlow is absent
 evaluate = ["evaluate>=0.4", "pillow"]
 monai = ["monai>=1.3", "torch>=2.0"]
 all = ["metric-diff[torch,keras,evaluate,monai]"]
 dev = ["pytest>=7", "metric-diff[all]"]
+
+[project.urls]
+Homepage = "https://github.com/DadCoder001/metric-diff"
+Repository = "https://github.com/DadCoder001/metric-diff"
+Issues = "https://github.com/DadCoder001/metric-diff/issues"
+Documentation = "https://github.com/DadCoder001/metric-diff/blob/main/docs/USER_GUIDE.md"
+Changelog = "https://github.com/DadCoder001/metric-diff/blob/main/CHANGELOG.md"
 
 [project.scripts]
 metric-diff = "metric_diff.cli:main"

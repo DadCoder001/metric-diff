@@ -12,6 +12,9 @@ Needs `pip install transformers` and these files in the Hugging Face cache (abou
   1aurent/ADE20K                    data/validation-00000-of-00001.parquet
 Run benchmarks/download_hf.py once to fetch exactly those. This script then works offline.
 
+Datasets and models are downloaded from the Hugging Face Hub, not redistributed here; their own
+licences and terms of use apply (ADE20K, for example, has terms of use for research purposes).
+
 About the ADE20K labels: 1aurent/ADE20K is the full ADE20K release (~3,600 object classes),
 not the 150-class SceneParsing subset the model predicts. Classes are mapped to the model's
 150 labels by name; unmapped and unlabelled pixels are ignored (class 0 in both masks, scored
@@ -226,7 +229,9 @@ def markdown(rows, batched, libs_cls, libs_seg, info, versions) -> str:
            f"Full-ADE classes mapped to the model's 150 by name cover {info['coverage']:.0%} of labelled "
            "pixels; the rest are ignored (class 0, `include_background=False`).",
            "- Reproduce: `python benchmarks/download_hf.py` (about 720 MB, once), then "
-           "`python benchmarks/hf_data.py`.", "",
+           "`python benchmarks/hf_data.py`.",
+           "- Datasets and models are downloaded from the Hugging Face Hub, not redistributed; their own "
+           "licences and terms of use apply.", "",
            "Versions: " + ", ".join(f"{k} {v}" for k, v in versions.items()), ""]
     for group_libs, title in ((libs_cls, "Text classification"), (libs_seg, "Segmentation")):
         sel = [r for r in rows if r["libs"] == group_libs]

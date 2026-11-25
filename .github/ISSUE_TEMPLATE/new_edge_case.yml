@@ -1,0 +1,24 @@
+name: New edge case
+description: A known metric difference between libraries that metric-diff doesn't cover yet
+title: "[edge case] <metric>: <short description>"
+labels: ["edge case"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What differs, and why
+      description: The libraries involved, the values they return, and the setting or convention behind it.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      render: python
+    validations:
+      required: true
+  - type: input
+    id: upstream
+    attributes:
+      label: Upstream issue or documentation (if any)
+      placeholder: https://github.com/<org>/<repo>/issues/<n>
