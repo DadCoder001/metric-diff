@@ -232,7 +232,7 @@ Commit `metric-baseline.json` (created once with `--save`); after an intended up
 | `num_classes` with classes that never occur | sklearn (`labels=`) and Keras count them as 0; torchmetrics and torcheval leave them out |
 | sklearn multiclass AUROC without `multi_class` | raises unless `multi_class="ovr"` |
 | Different `zero_division` | what 0/0 becomes; torcheval and Keras always use 0 |
-| Tied scores at the top-k cut-off | torchmetrics keeps the lowest class indices; sklearn, torcheval and Keras count any tied class as a hit |
+| Tied scores at the top-k cut-off | torchmetrics keeps exactly k classes, and which tied one depends on the platform (0.33 on Windows/macOS, 0.67 on Linux for the same data); sklearn, torcheval and Keras count any tied class as a hit |
 | Per-batch averaging, padding, dropped samples | see `compare_batched` above |
 | **Regression:** Keras MAPE is a percentage | 28.0 in Keras vs 0.28 in sklearn and torchmetrics |
 | **Regression:** MAPE with zero targets | each library divides by a different tiny epsilon: 7.5e14 vs 142,450 vs 1.7e8 |

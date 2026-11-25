@@ -116,7 +116,9 @@ TIES = np.array([[0.4, 0.3, 0.3, 0.0], [0.25, 0.25, 0.25, 0.25], [0.1, 0.2, 0.6,
 def test_top_k_ties_torchmetrics_differs():
     r = compare("accuracy", [2, 3, 2], TIES, top_k=2, average="micro", backends=THREE)
     assert r.results["sklearn"].value == pytest.approx(1.0)
-    assert r.results["torchmetrics"].value == pytest.approx(1 / 3, abs=1e-6)
+    # torch.topk's tie-breaking is unspecified and platform-dependent: 1/3 on Windows and macOS,
+    # 2/3 on Linux (found by CI). Either way it misses tied hits the other libraries count.
+    assert r.results["torchmetrics"].value < 1.0
     assert r.confirmed and keys(r) == ["top_k_ties"]
 
 

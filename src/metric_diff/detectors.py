@@ -630,7 +630,7 @@ class TopKTies(Detector):
                 and bool(case.settings.values("top_k")) and bool(self._tied_rows(case).any()))
 
     def transform(self, y_true, y_pred, case):
-        # Break ties the way torchmetrics does (lower class index first), so all libraries agree.
+        # Break ties deterministically (lower class index first), so every library ranks the same way.
         values = np.unique(y_pred)
         gap = np.diff(values).min() if len(values) > 1 else 1.0
         eps = min(1e-6, gap / (case.num_classes + 1))
@@ -640,11 +640,14 @@ class TopKTies(Detector):
         k = self._k(case)
         n = int(self._tied_rows(case).sum())
         others = [b for b in backends if b != "torchmetrics"]
-        detail = (f"{n} sample(s) have tied scores at the top-{k} cut-off. torchmetrics keeps only k "
-                  f"classes (the lowest class indices win the tie), while {' and '.join(others)} count the "
-                  "sample as correct if the true class is among the tied scores.")
+        detail = (f"{n} sample(s) have tied scores at the top-{k} cut-off. torchmetrics keeps exactly k "
+                  "classes using torch.topk, which doesn't specify which tied class wins, and the choice "
+                  "differs between platforms (we see different results on Linux and on Windows/macOS). "
+                  f"{' and '.join(others).capitalize() if others else 'Other libraries'} count the sample "
+                  "as correct if the true class is among the tied scores.")
         fix = ("Top-k accuracy is ambiguous for tied scores: break ties before computing (for example "
-               "add tiny noise or use higher-precision scores) so every library ranks the same way.")
+               "add tiny noise or use higher-precision scores) so every library, on every platform, "
+               "ranks the same way.")
         return detail, fix
 
 
