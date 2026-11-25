@@ -249,6 +249,15 @@ def _baseline_value(results) -> tuple[str | None, float | None]:
     return "majority", common
 
 
+def _covers(lib: str, metric: str) -> bool:
+    """Text and ranking libraries cover only some metrics of their task."""
+    from .ranking import SUPPORTS as RANKING
+    from .text import SUPPORTS as TEXT
+
+    table = {"text": TEXT, "ranking": RANKING}.get(task_of(metric))
+    return table is None or metric in table.get(lib, ())
+
+
 def run_matrix(*, backends: list[str] | None = None, cases: list[str] | None = None,
                rtol: float = 1e-4, atol: float = 1e-6) -> MatrixResult:
     """Run every edge case (or those whose id contains one of ``cases``) on every installed
@@ -259,7 +268,8 @@ def run_matrix(*, backends: list[str] | None = None, cases: list[str] | None = N
     versions = {b.name: b.version() for b in _backends.resolve(available)}
     rows = []
     for case in selected:
-        names = [n for n in available if task_of(case.metric) in task_of_lib[n]]
+        names = [n for n in available if task_of(case.metric) in task_of_lib[n]
+                 and _covers(n, case.metric)]
         y_true, y_pred = case.inputs()
         try:
             report = compare(case.metric, y_true, y_pred, backends=names, rtol=rtol, atol=atol, **case.kwargs)

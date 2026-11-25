@@ -29,6 +29,41 @@ class EdgeCase:
 
 # ---------------------------------------------------------------- data builders
 
+_HYP = ["The cat sat on the mat.", "It is a guide to action, which ensures that the military always "
+        "obeys the commands of the party.", "Hello there!"]
+_REF = ["The cat is sitting on the mat.", "It is a guide to action that ensures that the military will "
+        "forever heed Party commands.", "Hello, there."]
+
+
+def _text():
+    return _REF, _HYP
+
+
+def _text_two_sentences():
+    return (["The dog barked at night. The cat sat on a mat."],
+            ["The cat sat on the mat. The dog barked loudly at night."])
+
+
+_REL = [[3, 2, 0, 1, 0], [0, 1, 0, 0, 1], [2, 0, 0, 1, 0]]
+
+
+def _ranking():
+    return _REL, [[0.9, 0.8, 0.7, 0.2, 0.1], [0.5, 0.4, 0.9, 0.3, 0.2], [0.3, 0.6, 0.1, 0.8, 0.2]]
+
+
+def _ranking_ties():
+    return _REL, [[0.5, 0.5, 0.5, 0.2, 0.1], [0.5, 0.5, 0.9, 0.5, 0.2], [0.3, 0.3, 0.3, 0.3, 0.2]]
+
+
+def _ranking_logits():
+    rel, sc = _ranking()
+    return rel, [[x * 4 - 2 for x in s] for s in sc]
+
+
+def _ranking_empty():
+    rel, sc = _ranking()
+    return rel + [[0, 0, 0, 0, 0]], sc + [[0.1, 0.2, 0.3, 0.4, 0.5]]
+
 _YB = [0, 1, 1, 0, 1, 0, 1, 1]
 _PB = [0.1, 0.8, 0.65, 0.3, 0.9, 0.45, 0.2, 0.7]
 
@@ -184,6 +219,26 @@ CASES: list[EdgeCase] = [
     EdgeCase("seg-iou-dataset", "IoU, aggregation='dataset'", "iou", _masks, {"aggregation": "dataset"}),
     EdgeCase("seg-iou-no-background", "IoU per image, no background", "iou", _masks,
              {"aggregation": "per_image", "include_background": False}),
+    # text generation
+    EdgeCase("text-bleu-default", "BLEU, defaults", "bleu", _text),
+    EdgeCase("text-bleu-13a", "BLEU, tokenize='13a'", "bleu", _text, {"tokenize": "13a"}),
+    EdgeCase("text-bleu-sentence", "BLEU, mean of sentence scores", "bleu", _text,
+             {"aggregation": "sentence", "tokenize": "13a"}),
+    EdgeCase("text-chrf-default", "chrF, defaults", "chrf", _text),
+    EdgeCase("text-chrf-plusplus", "chrF++, word_order=2", "chrf", _text, {"word_order": 2}),
+    EdgeCase("text-rougeL", "ROUGE-L (control)", "rougeL", _text),
+    EdgeCase("text-rougeLsum-one-line", "ROUGE-Lsum, sentences on one line", "rougeLsum", _text_two_sentences),
+    # ranking / retrieval
+    EdgeCase("rank-ndcg-clean", "NDCG (control)", "ndcg", _ranking),
+    EdgeCase("rank-map-clean", "MAP (control)", "map", _ranking),
+    EdgeCase("rank-map-ties", "MAP, tied scores", "map", _ranking_ties),
+    EdgeCase("rank-mrr-ties", "MRR, tied scores", "mrr", _ranking_ties),
+    EdgeCase("rank-map-at-3", "MAP@3", "map", _ranking, {"top_k": 3}),
+    EdgeCase("rank-map-logits", "MAP, negative scores (logits)", "map", _ranking_logits,
+             reference="Lightning-AI/torchmetrics#3518"),
+    EdgeCase("rank-p-at-4-logits", "precision@4, negative scores", "precision_at_k", _ranking_logits,
+             {"top_k": 4}, reference="Lightning-AI/torchmetrics#3518"),
+    EdgeCase("rank-ndcg-empty-query", "NDCG, a query without relevant documents", "ndcg", _ranking_empty),
 ]
 
 

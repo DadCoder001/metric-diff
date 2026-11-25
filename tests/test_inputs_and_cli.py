@@ -45,7 +45,7 @@ def test_metric_aliases():
     assert normalise_metric("ROC_AUC") == "auroc"
     assert normalise_metric("f1-score") == "f1"
     with pytest.raises(ValueError):
-        normalise_metric("bleu")
+        normalise_metric("meteor")
 
 
 def test_single_backend_reports_nothing_to_compare():
@@ -99,3 +99,14 @@ def test_cli_json_multiclass_scores_npy(tmp_path, capsys):
 def test_cli_bad_file(capsys):
     assert main(["f1", "--true", "nope.csv", "--pred", "nope.csv"]) == 2
     assert "no such file" in capsys.readouterr().err
+
+
+def test_no_library_for_metric_gives_install_hint(monkeypatch):
+    from metric_diff import backends as b
+    from metric_diff.core import resolve_for
+
+    monkeypatch.setattr(b, "resolve", lambda names: [b.SklearnBackend()])
+    with pytest.raises(ImportError, match=r"metric-diff\[text\]"):
+        resolve_for("bleu", None)
+    with pytest.raises(ImportError, match=r"metric-diff\[ranking\]"):
+        resolve_for("mrr", None)

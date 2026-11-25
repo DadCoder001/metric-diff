@@ -24,6 +24,9 @@ This guide is organised by **what you're seeing**. Find your scenario, run the s
   10. [I'm upgrading a metric library: will any numbers change?](#10-im-upgrading-a-metric-library-will-any-numbers-change)
   11. [I'm writing a paper or report and need to document my metrics](#11-im-writing-a-paper-or-report-and-need-to-document-my-metrics)
   12. [metric-diff says "no known cause"](#12-metric-diff-says-no-known-cause)
+  13. [My BLEU / ROUGE doesn't match the paper (or another library)](#13-my-bleu--rouge-doesnt-match-the-paper-or-another-library)
+  14. [My retrieval metrics (NDCG, MAP, MRR) don't match trec_eval or a leaderboard](#14-my-retrieval-metrics-ndcg-map-mrr-dont-match-trec_eval-or-a-leaderboard)
+  15. [I want my test suite to fail when a metric changes meaning](#15-i-want-my-test-suite-to-fail-when-a-metric-changes-meaning)
 - [Quick reference](#quick-reference)
 - [FAQ](#faq)
 
@@ -34,7 +37,9 @@ This guide is organised by **what you're seeing**. Find your scenario, run the s
 ```bash
 pip install metric-diff               # scikit-learn only (the reference)
 pip install "metric-diff[torch]"      # + torchmetrics, torcheval
-pip install "metric-diff[all]"        # + Keras 3, Hugging Face evaluate, MONAI
+pip install "metric-diff[text]"       # + sacrebleu, nltk, rouge-score
+pip install "metric-diff[ranking]"    # + pytrec_eval (trec_eval)
+pip install "metric-diff[all]"        # + Keras 3, Hugging Face evaluate, MONAI, text, ranking
 ```
 
 metric-diff compares whichever of these are installed. Install the libraries **you** use: the point is to compare your library against the reference.
@@ -50,7 +55,7 @@ your settings: average='macro'                                                  
 
 MISMATCH: explained by 1 cause (confirmed)   <- the verdict
 
-  1. Large logits saturate when squashed to probabilities      <- the cause
+  1. Large logits saturate when squashed to probabilities  [saturation]  <- the cause (and its key)
      torchmetrics applies sigmoid to logits in float32: ...     <- why the numbers differ
      fix: ... torch.sigmoid((logits - logits.mean()).double()).  <- what to change in your code
      see: Lightning-AI/torchmetrics#2819                        <- upstream issue, if there is one
@@ -106,7 +111,7 @@ print(compare("accuracy", y_true, y_pred, backends=["sklearn", "torchmetrics"]))
 
 MISMATCH: explained by 1 cause (confirmed)
 
-  1. Different averaging
+  1. Different averaging  [average]
      ... sklearn: micro (accuracy_score has no `average`); torchmetrics: 'macro'
      (macro accuracy = sklearn balanced_accuracy_score).
 ```
@@ -148,7 +153,7 @@ print(compare("auroc", labels, logits, backends=["sklearn", "torchmetrics"]))
   sklearn        0.9286     (1.9.1)
   torchmetrics   0.5000     (1.9.0)  <-
 
-  1. Large logits saturate when squashed to probabilities
+  1. Large logits saturate when squashed to probabilities  [saturation]
      torchmetrics applies sigmoid to logits in float32: the 15 distinct scores collapse to 1
      distinct value ...
      see: Lightning-AI/torchmetrics#2819
@@ -197,7 +202,7 @@ print(compare_batched("f1", batches, backends=["sklearn", "torchmetrics"]))
   torchmetrics update()/compute()   0.6558     accumulated
 
 PROBLEM: 1 issue with how the metric is aggregated
-  1. Averaging per-batch values is not the dataset metric
+  1. Averaging per-batch values is not the dataset metric  [batch_average]
 ```
 
 **What to do:** accumulate, don't average: `metric.update()` each batch and `metric.compute()` once, or log the torchmetrics `Metric` object itself in Lightning. On real data the gap can be large: per-batch R2 on the diabetes dataset averaged **0.223** against **0.365** for the whole test set.
@@ -297,7 +302,7 @@ your settings: sklearn: threshold=0.3
   sklearn        0.6667     (1.9.1)
   torchmetrics   1.0000     (1.9.0)  <-
 
-  1. Different decision thresholds
+  1. Different decision thresholds  [threshold]
      The libraries turn scores into labels at different thresholds (sklearn: 0.3; torchmetrics: 0.5).
 ```
 
@@ -342,6 +347,84 @@ metric-diff f1 --true y_true.csv --pred y_pred.csv --json > report.json
 
 Every confirmed report becomes a new detector and a new case in the matrix.
 
+### 13. My BLEU / ROUGE doesn't match the paper (or another library)
+
+BLEU depends on tokenisation, smoothing, the scale and whether you average sentences; ROUGE on stemming and sentence splitting. Pass references and generated texts (one string per sample, or a list of references per sample):
+
+```python
+from metric_diff import compare
+
+references = ["The cat is sitting on the mat.", "Hello, there."]
+generated = ["The cat sat on the mat.", "Hello there!"]
+
+print(compare("bleu", references, generated))
+```
+
+Typical causes it confirms:
+
+- **0-100 vs 0-1** `[text_scale]`: sacrebleu reports 39.2 where torchmetrics reports 0.392.
+- **Tokenisation** `[bleu_tokenize]`: sacrebleu and evaluate split off punctuation (13a); torchmetrics `BLEUScore` and nltk split on spaces, so "mat." never matches "mat".
+- **Smoothing** `[bleu_smoothing]`: sacrebleu smooths by default; averaging sentence BLEU without smoothing gives 0 for every sentence with no 4-gram match.
+- **Corpus vs sentence average** `[text_aggregation]`: the mean of sentence BLEU is not corpus BLEU.
+- **chrF vs chrF++** `[chrf_word_order]`: torchmetrics `CHRFScore` is chrF++ by default.
+- **ROUGE-Lsum** `[rougelsum_sentences]`: torchmetrics splits sentences itself; rouge-score and evaluate need one sentence per line.
+
+Reproduce your own call: `compare("bleu", refs, hyps, tokenize="13a", smooth=False)`, or per library with `settings={"sacrebleu": {"tokenize": "intl"}}`. To compare with a paper, use sacrebleu and report its signature (tokenizer, smoothing, version). For Chinese, Japanese or Thai, BLEU needs `tokenize="zh"` or `"char"`, and ROUGE drops non-Latin characters unless you pass your own tokenizer: metric-diff adds a note when it sees such text.
+
+From the command line, one text per line and one `--true` file per reference set:
+
+```bash
+metric-diff bleu --true refs.txt --pred generated.txt
+metric-diff chrf --true refs_a.txt --true refs_b.txt --pred generated.txt --word-order 2
+```
+
+### 14. My retrieval metrics (NDCG, MAP, MRR) don't match trec_eval or a leaderboard
+
+Give one row per query: the relevance of each candidate (0 = not relevant, graded values for NDCG) and your model's scores. Rows can have different lengths:
+
+```python
+from metric_diff import compare
+
+relevance = [[3, 2, 0, 1, 0], [0, 1, 0, 0, 1], [2, 0, 0, 1]]
+scores = [[0.5, 0.5, 0.5, 0.2, 0.1], [0.5, 0.5, 0.9, 0.5, 0.2], [0.3, 0.3, 0.3, 0.2]]
+
+print(compare("map", relevance, scores))
+print(compare("ndcg", relevance, scores, top_k=3))
+```
+
+Typical causes:
+
+- **Tied scores** `[ranking_ties]`: sklearn averages over tie orders, torchmetrics keeps its sort order, trec_eval sorts ties by document id. Common with rounded, quantised or saturated scores. Break ties yourself before evaluating.
+- **Scores of 0 or below** `[torchmetrics_nonpositive_scores]`: torchmetrics' MAP, MRR, precision and recall treat such candidates as not retrieved ([torchmetrics#3518](https://github.com/Lightning-AI/torchmetrics/issues/3518)). Pass sigmoid(logits) or shifted scores.
+- **MAP@k** `[map_cutoff]`: trec_eval divides by all relevant documents; torchmetrics by those found in the top k.
+- **Queries without relevant documents** `[empty_queries]`: counted as 0 by default everywhere; `empty_queries="skip"` reproduces torchmetrics' `empty_target_action="skip"`.
+- **precision@k on short lists** `[adaptive_k]`: divide by k or by the list length.
+
+For TREC, MS MARCO or BEIR comparisons, trec_eval (pytrec_eval) is the reference.
+
+### 15. I want my test suite to fail when a metric changes meaning
+
+`metric_diff.testing` has assertions that print the full report when they fail:
+
+```python
+import numpy as np
+from metric_diff.testing import assert_metrics_agree, assert_batches_consistent
+
+y = np.array([0, 1, 1, 0, 1, 0, 1, 1])
+scores = np.array([0.1, 0.8, 0.65, 0.3, 0.9, 0.45, 0.2, 0.7])
+
+assert_metrics_agree("auroc", y, scores)                      # every installed library agrees
+assert_metrics_agree("f1", y, scores, threshold=0.5,
+                     expected=0.8889)                         # ...and equals the value you expect
+assert_metrics_agree("precision", y, scores, threshold=0.3,
+                     allow=["threshold_tie"])                 # a difference you know about, nothing else
+assert_batches_consistent("accuracy", [(y[:4], scores[:4]), (y[4:], scores[4:])])
+```
+
+- `allow` takes cause keys (the names in brackets in a report). A typo raises an error, so a test can't silently allow nothing.
+- `min_libraries=2` (default) fails when fewer than two libraries could compute the metric, so a test can't pass just because a library isn't installed in CI. Use `min_libraries=1` with `expected=` to check one library against a known value.
+- The assertions raise `MetricMismatch`, an `AssertionError` whose `.report` holds the full report.
+
 ---
 
 ## Quick reference
@@ -353,8 +436,10 @@ Every confirmed report becomes a new detector and a new case in the matrix.
 | Classification (binary, multiclass) | `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision` | `y_true`: 1-D integer labels. `y_pred`: labels, binary scores (probabilities or logits), or `(n, n_classes)` scores |
 | Regression | `r2`, `mae`, `mse`, `rmse`, `mape` | `y_true`, `y_pred`: same shape, 1-D or `(n, n_outputs)` |
 | Segmentation | `dice`, `iou` | integer label maps `(n_images, *spatial)` |
+| Text generation | `bleu`, `chrf`, `rouge1`, `rouge2`, `rougeL`, `rougeLsum` | `y_true`: a reference string (or list of references) per sample. `y_pred`: one generated string per sample |
+| Ranking / retrieval | `ndcg`, `map`, `mrr`, `precision_at_k`, `recall_at_k`, `hit_rate` | one row per query: `y_true` relevance (0 = not relevant), `y_pred` scores; rows may differ in length |
 
-Aliases work too: `roc_auc`, `f1_score`, `r2_score`, `mean_squared_error`, `jaccard`, `mean_iou`, …
+Aliases work too: `roc_auc`, `f1_score`, `r2_score`, `mean_squared_error`, `jaccard`, `mean_iou`, `sacrebleu`, `rouge_l`, `ndcg@k`, `p@k`, `recall@k`, …
 
 ### Settings
 
@@ -365,11 +450,18 @@ Aliases work too: `roc_auc`, `f1_score`, `r2_score`, `mean_squared_error`, `jacc
 | `pos_label` | a label | binary data with labels other than {0, 1} |
 | `num_classes` | int | classes that never occur in the data |
 | `zero_division` | `0`, `1`, `"nan"` | precision / recall / F1 when 0/0 |
-| `top_k` | int | multiclass accuracy |
+| `top_k` | int | multiclass accuracy; ranking cut-off k |
 | `include_background` | `True` / `False` | segmentation |
-| `aggregation` | `"dataset"`, `"per_image"` | segmentation |
+| `aggregation` | `"dataset"`, `"per_image"` / `"corpus"`, `"sentence"` | segmentation / BLEU and chrF |
+| `tokenize` | `"13a"`, `"whitespace"`, `"intl"`, `"char"`, `"zh"` | BLEU |
+| `smooth` | `True` / `False` | BLEU |
+| `lowercase` | `True` / `False` | BLEU, chrF |
+| `word_order` | `0` (chrF), `2` (chrF++) | chrF |
+| `use_stemmer` | `True` / `False` | ROUGE |
+| `empty_queries` | `"zero"`, `"skip"`, `"one"` | ranking: queries without relevant documents |
+| `adaptive_k` | `True` / `False` | precision@k when a query has fewer than k candidates |
 | `settings={lib: {...}}` | any of the above, per library | reproducing code that calls libraries differently |
-| `backends=[...]` | `sklearn`, `torchmetrics`, `torcheval`, `keras`, `evaluate`, `monai` | which libraries to compare |
+| `backends=[...]` | `sklearn`, `torchmetrics`, `torcheval`, `keras`, `evaluate`, `monai`, `sacrebleu`, `nltk`, `rouge_score`, `pytrec_eval` | which libraries to compare |
 
 ### Command line
 
@@ -379,7 +471,7 @@ metric-diff <metric> --true FILE --pred FILE --batch-size N [--expected-n N]
 metric-diff matrix [--case TEXT] [--format text|markdown|json] [--output FILE] [--save FILE] [--baseline FILE] [--list]
 ```
 
-Files: `.csv`, `.txt` or `.npy` (`.npy` for 2-D/3-D masks). Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--zero-division`, `--top-k`, `--include-background`, `--aggregation`, `--set LIB.KEY=VALUE`.
+Files: `.csv`, `.txt` or `.npy` (`.npy` for 2-D/3-D masks). Text metrics: one text per line, `--true` repeated for several references. Ranking metrics: one query per line, values separated by commas or spaces. Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--zero-division`, `--top-k`, `--include-background`, `--aggregation`, `--tokenize`, `--smooth`, `--lowercase`, `--word-order`, `--use-stemmer`, `--empty-queries`, `--adaptive-k`, `--set LIB.KEY=VALUE`.
 
 Exit codes: `0` OK, `1` mismatch / aggregation problem / drift, `2` bad input.
 
@@ -391,7 +483,7 @@ Exit codes: `0` OK, `1` mismatch / aggregation problem / drift, `2` bad input.
 Usually none is wrong: the libraries answer slightly different questions (macro vs micro, per image vs pooled). Choose the convention your field reports, set it explicitly, and state it. metric-diff uses scikit-learn as the reference because it is the de facto standard; for segmentation, follow Metrics Reloaded.
 
 **Does metric-diff change my data or send it anywhere?**
-No. Everything runs locally on your arrays. The only network access is Hugging Face `evaluate` downloading its metric scripts the first time it is used (then cached).
+No. Everything runs locally on your arrays. The only network access is Hugging Face `evaluate` downloading its metric scripts the first time it is used, and torchmetrics' ROUGE-Lsum downloading nltk's `punkt_tab` sentence splitter (both cached afterwards).
 
 **Why is a library `skipped`?**
 It can't do what was asked: torcheval has no weighted AUROC, no MAE and no segmentation; Keras and evaluate have no Dice; MONAI only averages per image. The note gives the exact reason.
@@ -400,14 +492,13 @@ It can't do what was asked: torcheval has no weighted AUROC, no MAE and no segme
 To confirm a cause, metric-diff re-runs every library with candidate settings aligned. Importing torch, Keras and evaluate takes several seconds the first time in a process; after that most comparisons take well under a second. Hugging Face `evaluate` adds about 2 s per metric the first time it loads it, and large segmentation sets (hundreds of images, 150 classes) take 15 to 35 s. Pass `backends=[...]` to compare only the libraries you use.
 
 **Can I use it in tests?**
-Yes:
+Yes, see [scenario 15](#15-i-want-my-test-suite-to-fail-when-a-metric-changes-meaning):
 
 ```python
-from metric_diff import compare
+from metric_diff.testing import assert_metrics_agree
 
-r = compare("auroc", [0, 1, 1, 0], [0.2, 0.9, 0.6, 0.4], backends=["sklearn", "torchmetrics"])
-assert r.agree, r
+assert_metrics_agree("auroc", [0, 1, 1, 0], [0.2, 0.9, 0.6, 0.4], backends=["sklearn", "torchmetrics"])
 ```
 
 **Which library versions was this written against?**
-scikit-learn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15, evaluate 0.4.6, MONAI 1.6. Library behaviour changes over time; run `metric-diff matrix` to see your versions.
+scikit-learn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15, evaluate 0.4.6, MONAI 1.6, sacrebleu 2.6, nltk 3.10, rouge-score 0.1.2, pytrec_eval-terrier 0.5. Library behaviour changes over time; run `metric-diff matrix` to see your versions.

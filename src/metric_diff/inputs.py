@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-SETTING_KEYS = ("average", "threshold", "zero_division", "top_k", "include_background", "aggregation")
+SETTING_KEYS = ("average", "threshold", "zero_division", "top_k", "include_background", "aggregation",
+                "tokenize", "smooth", "lowercase", "word_order", "use_stemmer", "empty_queries",
+                "adaptive_k")
 AVERAGES = ("micro", "macro", "weighted")
 
 
@@ -51,10 +53,14 @@ class Settings:
 
 def make_settings(average=None, threshold=None, settings=None, explicit_classes=False,
                   zero_division=None, top_k=None, include_background=None,
-                  aggregation=None) -> Settings:
+                  aggregation=None, **extra) -> Settings:
+    unknown = set(extra) - set(SETTING_KEYS)
+    if unknown:
+        raise ValueError(f"unknown setting(s) {sorted(unknown)}; supported: {', '.join(SETTING_KEYS)}")
     common = _check_all({"average": average, "threshold": threshold,
                          "zero_division": zero_division, "top_k": top_k,
-                         "include_background": include_background, "aggregation": aggregation})
+                         "include_background": include_background, "aggregation": aggregation,
+                         **extra})
     per = {}
     for lib, kw in (settings or {}).items():
         unknown = set(kw) - set(SETTING_KEYS)
@@ -67,16 +73,53 @@ def make_settings(average=None, threshold=None, settings=None, explicit_classes=
 def _check_all(kw: dict) -> dict:
     checks = {"average": _check_average, "threshold": _check_threshold,
               "zero_division": _check_zero_division, "top_k": _check_top_k,
-              "include_background": _check_bool, "aggregation": _check_aggregation}
-    return {k: checks[k](v) for k, v in kw.items() if v is not None}
+              "include_background": _check_bool, "aggregation": _check_aggregation,
+              "tokenize": _check_tokenize, "smooth": _check_bool, "lowercase": _check_bool,
+              "word_order": _check_word_order, "use_stemmer": _check_bool,
+              "empty_queries": _check_empty_queries, "adaptive_k": _check_bool}
+    out = {}
+    for k, v in kw.items():
+        if v is None:
+            continue
+        try:
+            out[k] = checks[k](v)
+        except ValueError as e:
+            raise ValueError(str(e).replace("{key}", k)) from None
+    return out
 
 
 def _check_bool(v):
     if isinstance(v, str) and v.lower() in ("true", "false"):
         return v.lower() == "true"
     if not isinstance(v, (bool, np.bool_)):
-        raise ValueError(f"include_background must be True or False (got {v!r})")
+        raise ValueError(f"{{key}} must be True or False (got {v!r})")
     return bool(v)
+
+
+TOKENIZERS = ("13a", "whitespace", "intl", "char", "zh")
+
+
+def _check_tokenize(v):
+    if v not in TOKENIZERS:
+        raise ValueError(f"tokenize must be one of {', '.join(TOKENIZERS)} (got {v!r})")
+    return v
+
+
+EMPTY_QUERIES = ("zero", "skip", "one")
+
+
+def _check_empty_queries(v):
+    if v not in EMPTY_QUERIES:
+        raise ValueError(f"empty_queries must be one of {', '.join(EMPTY_QUERIES)} (got {v!r})")
+    return v
+
+
+def _check_word_order(v):
+    if isinstance(v, str) and v.isdigit():
+        v = int(v)
+    if isinstance(v, bool) or v not in (0, 1, 2):
+        raise ValueError(f"word_order must be 0 (chrF), 1 or 2 (chrF++) (got {v!r})")
+    return int(v)
 
 
 def _check_aggregation(a):
@@ -114,9 +157,14 @@ def _check_threshold(t):
 CLASSIFICATION_METRICS = ("accuracy", "precision", "recall", "f1", "auroc", "average_precision")
 REGRESSION_METRICS = ("r2", "mae", "mse", "rmse", "mape")
 SEGMENTATION_METRICS = ("dice", "iou")
-METRICS = CLASSIFICATION_METRICS + REGRESSION_METRICS + SEGMENTATION_METRICS
+TEXT_METRICS = ("bleu", "chrf", "rouge1", "rouge2", "rougeL", "rougeLsum")
+RETRIEVAL_METRICS = ("ndcg", "map", "mrr", "precision_at_k", "recall_at_k", "hit_rate")
+RETRIEVAL_KEYS = ("top_k", "empty_queries", "adaptive_k")
+METRICS = (CLASSIFICATION_METRICS + REGRESSION_METRICS + SEGMENTATION_METRICS + TEXT_METRICS
+           + RETRIEVAL_METRICS)
 SEGMENTATION_KEYS = ("include_background", "aggregation")
-AGGREGATIONS = ("dataset", "per_image")
+AGGREGATIONS = ("dataset", "per_image", "corpus", "sentence")
+TEXT_KEYS = ("tokenize", "smooth", "lowercase", "word_order", "use_stemmer")
 LABEL_METRICS = ("accuracy", "precision", "recall", "f1")
 RANKING_METRICS = ("auroc", "average_precision")
 
@@ -138,6 +186,28 @@ _ALIASES = {
     "auc": "auroc",
     "ap": "average_precision",
     "auprc": "average_precision",
+    "sacrebleu": "bleu",
+    "bleu_score": "bleu",
+    "chrf_score": "chrf",
+    "rouge_1": "rouge1",
+    "rouge_2": "rouge2",
+    "rougel": "rougeL",
+    "rouge_l": "rougeL",
+    "rougelsum": "rougeLsum",
+    "rouge_lsum": "rougeLsum",
+    "ndcg@k": "ndcg",
+    "ndcg_score": "ndcg",
+    "mean_average_precision": "map",
+    "map@k": "map",
+    "mean_reciprocal_rank": "mrr",
+    "mrr@k": "mrr",
+    "precision@k": "precision_at_k",
+    "p@k": "precision_at_k",
+    "recall@k": "recall_at_k",
+    "r@k": "recall_at_k",
+    "hit_rate@k": "hit_rate",
+    "hitrate": "hit_rate",
+    "success@k": "hit_rate",
 }
 
 
@@ -184,6 +254,14 @@ class Case:
         if self.task == "segmentation":
             shape = "x".join(str(s) for s in self.y_true.shape[1:])
             return f"segmentation, {self.n_samples} images of {shape}, {self.num_classes} classes"
+        if self.task == "text":
+            from .text import describe
+
+            return describe(self)
+        if self.task == "ranking":
+            from .ranking import describe
+
+            return describe(self)
         if self.task == "regression":
             outputs = "" if self.y_true.ndim == 1 else f", {self.y_true.shape[1]} outputs"
             return f"regression, {self.n_samples} samples{outputs}"

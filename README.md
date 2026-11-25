@@ -6,7 +6,7 @@
 
 **Your F1 score is 0.75 in torchmetrics, 0.70 in torcheval, a vector in Keras and an error in sklearn. Which one is right, and why?**
 
-`metric-diff` computes the same metric with **scikit-learn**, **torchmetrics**, **torcheval**, **Keras 3**, **Hugging Face evaluate** and **MONAI** (segmentation). When they disagree, it finds the setting that causes it, **re-runs every library with that setting aligned to confirm**, and tells you how to fix your code.
+`metric-diff` computes the same metric with **scikit-learn**, **torchmetrics**, **torcheval**, **Keras 3**, **Hugging Face evaluate** and **MONAI** (segmentation), and for text generation and retrieval with **sacrebleu**, **nltk**, **rouge-score** and **pytrec_eval** (trec_eval). When they disagree, it finds the setting that causes it, **re-runs every library with that setting aligned to confirm**, and tells you how to fix your code.
 
 It also answers the other classic question: **is the number I logged per batch the number for my dataset?**
 
@@ -24,7 +24,7 @@ metric-diff: auroc (binary, 15 samples, predictions look like logits (values out
 
 MISMATCH: explained by 1 cause (confirmed)
 
-  1. Large logits saturate when squashed to probabilities
+  1. Large logits saturate when squashed to probabilities  [saturation]
      torchmetrics applies sigmoid to logits in float32: the 15 distinct scores collapse to 1
      distinct value (large logits all become 1.0), so their ranking is lost and auroc drifts
      toward 0.5. sklearn and torcheval rank the raw scores. Keras AUC also assumes
@@ -38,7 +38,7 @@ MISMATCH: explained by 1 cause (confirmed)
 
 ## Why
 
-Metric libraries look interchangeable but make different silent choices. Developers keep filing "wrong result" bugs that turn out to be defaults ([torchmetrics#746](https://github.com/Lightning-AI/torchmetrics/issues/746), [torcheval#191](https://github.com/meta-pytorch/torcheval/issues/191), [keras#5400](https://github.com/keras-team/keras/issues/5400)), and some are real bugs ([torchmetrics#2819](https://github.com/Lightning-AI/torchmetrics/issues/2819), [evaluate#869](https://github.com/huggingface/evaluate/issues/869)). metric-diff tells the two apart in seconds.
+Metric libraries look interchangeable but make different silent choices. Developers keep filing "wrong result" bugs that turn out to be defaults ([torchmetrics#746](https://github.com/Lightning-AI/torchmetrics/issues/746), [torcheval#191](https://github.com/meta-pytorch/torcheval/issues/191), [keras#5400](https://github.com/keras-team/keras/issues/5400)), and some are real bugs ([torchmetrics#2819](https://github.com/Lightning-AI/torchmetrics/issues/2819), [torchmetrics#3518](https://github.com/Lightning-AI/torchmetrics/issues/3518), [evaluate#869](https://github.com/huggingface/evaluate/issues/869)). In text generation, the same BLEU score is famously not comparable between papers because of tokenisation and smoothing choices ([Post 2018](https://aclanthology.org/W18-6319/)). metric-diff tells defaults and bugs apart in seconds.
 
 ## Install
 
@@ -48,10 +48,12 @@ pip install "metric-diff[torch]"   # + torchmetrics and torcheval
 pip install "metric-diff[keras]"   # + Keras 3
 pip install "metric-diff[evaluate]"  # + Hugging Face evaluate
 pip install "metric-diff[monai]"   # + MONAI (segmentation)
+pip install "metric-diff[text]"    # + sacrebleu, nltk, rouge-score (BLEU, chrF, ROUGE)
+pip install "metric-diff[ranking]" # + pytrec_eval (trec_eval: NDCG, MAP, MRR, @k)
 pip install "metric-diff[all]"     # everything
 ```
 
-Hugging Face `evaluate` downloads each metric script from the Hugging Face Hub the first time it is used (cached afterwards), so that backend needs internet access once.
+Hugging Face `evaluate` downloads each metric script from the Hugging Face Hub the first time it is used (cached afterwards), so that backend needs internet access once. torchmetrics' ROUGE-Lsum downloads nltk's small `punkt_tab` sentence splitter the first time, the same way.
 
 Keras runs on whichever backend you have. If TensorFlow isn't installed and you haven't set `KERAS_BACKEND`, metric-diff uses the torch backend.
 
@@ -90,11 +92,28 @@ compare("f1", y, probs, settings={
 
 If a library can't do what you asked (torcheval has no weighted AUROC, for example), it is shown as `skipped` with the reason, not counted as a mismatch.
 
-As a test guard:
+### In your test suite
+
+`metric_diff.testing` turns any comparison into an assertion, for pytest, unittest or plain scripts. A failing test prints the full explanation:
 
 ```python
-assert compare("auroc", y, scores).agree, compare("auroc", y, scores)
+from metric_diff.testing import assert_metrics_agree, assert_batches_consistent
+
+def test_val_f1_is_library_independent():
+    assert_metrics_agree("f1", y_val, scores, average="macro")
+
+def test_known_difference_only():
+    # passes only if the libraries agree, or differ *only* for a reason you accept
+    assert_metrics_agree("precision", y, scores, threshold=0.3, allow=["threshold_tie"])
+
+def test_my_own_metric():
+    assert_metrics_agree("f1", y, p, expected=my_f1(y, p))     # your code vs every library
+
+def test_epoch_metric():
+    assert_batches_consistent("f1", val_batches, expected_n=len(val_dataset))
 ```
+
+`allow` takes the keys shown in brackets in a report (`[threshold_tie]`); a typo raises an error instead of silently allowing nothing. By default at least two libraries must compute the metric (`min_libraries=2`), so a test can't pass just because only one library is installed.
 
 ### Is my per-batch metric the dataset metric?
 
@@ -117,7 +136,7 @@ metric-diff batched: f1 (binary, 1000 samples in 16 batches, batch sizes 40-64)
 
 PROBLEM: 1 issue with how the metric is aggregated
 
-  1. Averaging per-batch values is not the dataset metric
+  1. Averaging per-batch values is not the dataset metric  [batch_average]
      ...
 ```
 
@@ -139,9 +158,52 @@ compare("iou", true_masks, pred_masks, aggregation="per_image", include_backgrou
 
 On the same 3 images, "mean IoU" is 0.653 in sklearn, Keras and evaluate (all pixels pooled), 0.631 in torchmetrics (per image) and 0.735 in MONAI (per image, and false positives on images without the class are ignored). metric-diff names and confirms both causes.
 
+### Text generation (BLEU, chrF, ROUGE)
+
+`y_true` = references (a string per sample, or a list of strings for several references), `y_pred` = generated texts:
+
+```python
+compare("bleu", references, generated)
+compare("bleu", references, generated, tokenize="13a", smooth=False)   # settings for every library
+compare("chrf", references, generated, word_order=2)                  # chrF++
+compare("rougeLsum", references, generated, use_stemmer=True)
+```
+
+```text
+metric-diff: bleu (text, 3 generated texts, 1 reference each)
+
+  torchmetrics   0.3289     (1.9.0)
+  evaluate       0.3916     (0.4.6)  <-
+  sacrebleu      39.1597    (2.6.0)  <-
+  nltk           0.3206     (3.10.4)  <-
+
+MISMATCH: explained by 3 causes (confirmed)
+
+  1. Different scales: 0-100 vs 0-1  [text_scale]
+  2. Different tokenisation  [bleu_tokenize]
+     ... The 13a tokenizer (sacrebleu, evaluate's bleu) splits off punctuation: 'mat.' becomes
+     'mat .'; torchmetrics BLEUScore and nltk (called on text.split()) split on spaces only ...
+  3. nltk counts texts shorter than 4 words differently  [nltk_short_hypotheses]
+```
+
+Settings: `tokenize` (`13a`, `whitespace`, `intl`, `char`, `zh`), `smooth`, `lowercase`, `aggregation` (`corpus` or `sentence` mean), `word_order` (chrF), `use_stemmer` (ROUGE).
+
+### Ranking and retrieval (NDCG, MAP, MRR, precision@k, recall@k, hit rate)
+
+One row per query: `y_true` = relevance of each candidate (0 = not relevant, graded values for NDCG), `y_pred` = the model's scores. A 2-D array, or a list of rows of different lengths:
+
+```python
+compare("ndcg", relevance, scores, top_k=10)
+compare("map", relevance, scores)
+compare("precision_at_k", relevance, scores, top_k=5)
+compare("mrr", relevance, scores, empty_queries="skip")   # queries without a relevant document
+```
+
+On three queries with tied scores, MAP is 0.506 in sklearn, 0.678 in torchmetrics and 0.585 in trec_eval: each orders ties differently. With raw logits as scores, torchmetrics' MAP, MRR, precision and recall drop every candidate scored 0 or below ([torchmetrics#3518](https://github.com/Lightning-AI/torchmetrics/issues/3518)). metric-diff confirms both.
+
 ### Command line
 
-`.csv`, `.txt` or `.npy`, with one column per class for multiclass scores:
+`.csv`, `.txt` or `.npy`, with one column per class for multiclass scores. Text metrics read one text per line (repeat `--true` for several references, as sacrebleu does); ranking metrics read one query per line:
 
 ```bash
 metric-diff f1 --true y_true.csv --pred y_pred.csv
@@ -150,15 +212,17 @@ metric-diff f1 --true y.csv --pred p.csv --batch-size 64 --expected-n 1000
 metric-diff f1 --true y.csv --pred p.csv --backends sklearn,keras
 metric-diff f1 --true y.csv --pred p.csv --average weighted
 metric-diff precision --true y.csv --pred p.csv --set sklearn.threshold=0.3 --set torchmetrics.threshold=0.5
+metric-diff bleu --true refs.txt --true refs2.txt --pred generated.txt --tokenize 13a
+metric-diff ndcg --true relevance.csv --pred scores.csv --top-k 10
 ```
 
-Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--zero-division`, `--top-k`, `--include-background`, `--aggregation`, and `--set LIB.KEY=VALUE` (repeatable) for per-library overrides.
+Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--zero-division`, `--top-k`, `--include-background`, `--aggregation`, `--tokenize`, `--smooth`, `--lowercase`, `--word-order`, `--use-stemmer`, `--empty-queries`, `--adaptive-k`, and `--set LIB.KEY=VALUE` (repeatable) for per-library overrides.
 
 Exit code: `0` = OK, `1` = mismatch or aggregation problem, `2` = bad input, so it can fail a CI job.
 
 ## Conformance matrix: every library, every known edge case
 
-`compare()` answers *"why do my numbers disagree?"* for your data. The conformance matrix asks the question in advance: it runs a library of known edge cases (30 today, covering classification, regression and segmentation, each linked to the upstream issue where there is one) on every installed library, and shows who agrees and who doesn't.
+`compare()` answers *"why do my numbers disagree?"* for your data. The conformance matrix asks the question in advance: it runs a library of known edge cases (45 today, covering classification, regression, segmentation, text generation and ranking, each linked to the upstream issue where there is one) on every installed library, and shows who agrees and who doesn't.
 
 ```bash
 metric-diff matrix                                   # table in the terminal
@@ -189,7 +253,7 @@ seg-iou-default             0.6530    0.6308 x                 0.6530      0.653
 - **Upgrade safety.** Save a baseline, then re-run after upgrading a library. If torchmetrics 1.9 -> 2.0 changes AUROC on saturated logits, or macro F1 with an unseen class, you see that exact cell change, the day you upgrade instead of months later when results quietly shift between experiments.
 - **Choosing or switching libraries.** Moving a pipeline from Keras to PyTorch, or from sklearn to torchmetrics? See every known difference before you migrate, not one bug report at a time.
 - **Reproducible reporting.** Attach the Markdown matrix to a paper, model card or internal report: "computed with torchmetrics 1.9, which differs from sklearn in these documented ways". Reviewers and other teams can compare numbers fairly.
-- **Spotting likely bugs.** Red cells on control cases point at library behaviour worth a closer look: the open torchmetrics#2819, and F1 values above 1 from torcheval and Keras on labels {1, 2} (which we're reporting upstream), show up exactly like that.
+- **Spotting likely bugs.** Red cells on control cases point at library behaviour worth a closer look: the open torchmetrics#2819 and #3518, and F1 values above 1 from torcheval and Keras on labels {1, 2} (reported as [torcheval#241](https://github.com/meta-pytorch/torcheval/issues/241) and [keras#24360](https://github.com/keras-team/keras/issues/24360)), show up exactly like that.
 - **Shared knowledge.** Every reported mismatch becomes a new edge case, so the matrix keeps growing and everyone's CI checks it.
 
 ### Who it's for
@@ -243,12 +307,29 @@ Commit `metric-baseline.json` (created once with `--save`); after an intended up
 | **Segmentation:** torchmetrics `input_format` | label maps without `input_format="index"` silently give a wrong number (shown as a note) |
 | **evaluate** `r_squared` rounds to 3 decimals | 0.959 vs 0.9595 |
 | **Regression:** float32 rounding on large values | R2 of 1.0000001 instead of 0.989 when values are about 1e6 (torchmetrics#3077) |
+| **Text:** 0-100 vs 0-1 | sacrebleu (BLEU, chrF) and evaluate (chrF) report 0-100 |
+| **Text:** BLEU tokenisation | 13a (sacrebleu, evaluate) vs whitespace (torchmetrics `BLEUScore`, nltk): 39.2 vs 32.9 on the same text |
+| **Text:** BLEU smoothing | sacrebleu smooths by default; the others don't, and each smooths differently when asked |
+| **Text:** corpus vs mean of sentence BLEU/chrF | 0.11 vs 0.32 (nltk) on the same three sentences |
+| **Text:** nltk and short texts | nltk counts a text shorter than 4 words as having unmatched n-grams, lowering corpus BLEU |
+| **Text:** chrF vs chrF++ | torchmetrics `CHRFScore` defaults to chrF++ (`n_word_order=2`) |
+| **Text:** chrF averaging | sacrebleu averages precision/recall over n-gram orders, torchmetrics averages F-scores (`eps_smoothing`) |
+| **Text:** ROUGE-Lsum sentence splitting | torchmetrics splits sentences with nltk (0.87); rouge-score and evaluate only on newlines (0.43) |
+| **Text:** stemming, lowercasing per library | your settings differ between calls |
+| **Text:** non-Latin text in ROUGE | every library drops the characters by default and scores 0 (shown as a note) |
+| **Ranking:** tied scores | sklearn averages over tie orders, torchmetrics keeps its sort order, trec_eval sorts ties by document id |
+| **Ranking:** scores of 0 or below | torchmetrics MAP/MRR/precision/recall treat them as not retrieved (torchmetrics#3518) |
+| **Ranking:** MAP@k denominator | trec_eval divides by all relevant documents, torchmetrics by those found in the top k |
+| **Ranking:** queries without relevant documents | counted as 0, skipped or counted as 1 |
+| **Ranking:** precision@k on short lists | divide by k, or by the list length (`adaptive_k` / `limit_k_to_size`) |
 
 Metrics:
 
 - **Classification** (binary and multiclass): `accuracy`, `precision`, `recall`, `f1`, `auroc`, `average_precision`
 - **Segmentation** (label maps, 2-D or 3-D): `dice`, `iou` (Keras and evaluate have IoU only; torcheval has none)
 - **Regression** (single or multi-output): `r2`, `mae`, `mse`, `rmse`, `mape` (torcheval only has `r2` and `mse`; evaluate is single-output only)
+- **Text generation**: `bleu`, `chrf` (sacrebleu, nltk for BLEU, torchmetrics, evaluate), `rouge1`, `rouge2`, `rougeL`, `rougeLsum` (rouge-score, torchmetrics, evaluate)
+- **Ranking / retrieval**: `ndcg`, `map` (sklearn, torchmetrics, pytrec_eval), `mrr`, `precision_at_k`, `recall_at_k`, `hit_rate` (torchmetrics, pytrec_eval; torcheval for precision@k)
 
 evaluate has no average precision, `zero_division` or top-k; those cases show it as skipped.
 
@@ -271,7 +352,7 @@ And on pretrained Hugging Face models ([benchmarks/RESULTS_HF.md](https://github
 
 - **DistilBERT on SST-2 (872 sentences):** Keras F1 **0.675 instead of 0.914**; Keras AUROC **0.959** on probabilities (its 200 fixed thresholds can't resolve confident predictions bunched near 0 and 1) and **0.911** on logits, vs **0.972** everywhere else; Keras PR-AUC 0.943 vs average precision 0.973. On the model's 2-column output, sklearn raises and wants `scores[:, 1]`.
 - **SegFormer on ADE20K (200 validation images, 150 classes):** the same predictions give **Dice 0.284** (all pixels pooled: sklearn), **0.388** (per image: torchmetrics) and **0.538** (MONAI's `ignore_empty=True` default); **IoU 0.209 / 0.335 / 0.464**. MONAI's default alone adds about 0.15 by ignoring false positives on images without the class.
-- **torchmetrics' own two IoU APIs disagree:** the `MeanIoU` class gives 0.304 and the `mean_iou` function 0.335 on the same masks, because the class pools all (image, class) pairs while the function averages per image. Found by the batch check; not caused by batching. We're sharing this with the torchmetrics maintainers.
+- **torchmetrics' own two IoU APIs disagree:** the `MeanIoU` class gives 0.304 and the `mean_iou` function 0.335 on the same masks, because the class pools all (image, class) pairs while the function averages per image. Found by the batch check; not caused by batching. Reported as [torchmetrics#3660](https://github.com/Lightning-AI/torchmetrics/issues/3660).
 - Running on real data also made metric-diff faster: segmentation now processes images in chunks (one-hot masks over 150 classes would need gigabytes) and uses MONAI's label-map Dice path (3x faster, identical values).
 
 ## Which number is right?
@@ -279,6 +360,8 @@ And on pretrained Hugging Face models ([benchmarks/RESULTS_HF.md](https://github
 Usually none is "wrong": the libraries answer slightly different questions. Pick the convention your field reports and state it:
 
 - **Classification and regression:** scikit-learn is the de facto reference; metric-diff uses it as the baseline.
+- **Text generation:** report BLEU and chrF from sacrebleu with its signature (tokenizer, smoothing, version), as recommended by [Post 2018](https://aclanthology.org/W18-6319/), and say whether ROUGE used stemming and one sentence per line.
+- **Ranking:** trec_eval (pytrec_eval) is the reference behind TREC, MS MARCO and BEIR results; break score ties yourself and state how queries without relevant documents are handled.
 - **Segmentation:** follow [Metrics Reloaded](https://doi.org/10.1038/s41592-023-02151-z) (Maier-Hein et al., *Nature Methods* 2024), the consortium recommendations for choosing and aggregating image-analysis metrics, and report whether Dice/IoU is per image or pooled and whether background is included.
 
 ## Limitations
@@ -286,6 +369,8 @@ Usually none is "wrong": the libraries answer slightly different questions. Pick
 - Settings supported: `average` (micro / macro / weighted), `threshold`, `pos_label`, `num_classes`, `zero_division`, `top_k` (accuracy). Not yet: `ignore_index` (masking the samples gives the same result in every library), sample weights, per-class output (`average=None`).
 - Segmentation has no `ignore_index` yet. The usual workaround (ignored pixels set to class 0 in both masks, with `include_background=False`) is exact for sklearn, torchmetrics and MONAI, but Keras and evaluate can't leave class 0 out, so they are skipped in that setup.
 - No multilabel, sample weights or per-class output yet. Regression has no settings yet (e.g. `multioutput`).
+- Text: BLEU, chrF and ROUGE only (no METEOR, BERTScore, WER yet); nltk is compared on BLEU only (its chrF uses other definitions). `compare_batched` doesn't cover text or ranking metrics.
+- Ranking: linear-gain NDCG only (as in sklearn, torchmetrics and trec_eval); `ranx` isn't compared yet (it pulls in a large dependency tree).
 - Explanations describe the library versions tested (sklearn 1.9, torchmetrics 1.9, torcheval 0.0.7, Keras 3.15, evaluate 0.4.6, MONAI 1.6). Tests check the key defaults so they fail loudly when a library changes.
 
 ## Roadmap
@@ -294,7 +379,8 @@ Usually none is "wrong": the libraries answer slightly different questions. Pick
 - Multilabel classification; regression settings (`multioutput`, sample weights)
 - Detection mAP (pycocotools / COCO conventions)
 - More edge cases in the matrix (send yours as an issue with `--json` output)
-- pytest plugin
+- Lightning and Keras callbacks that check the logged epoch metric
+- WER/CER, calibration (ECE), multilabel
 
 ## Contributing
 

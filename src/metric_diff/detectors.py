@@ -40,6 +40,10 @@ class Detector:
     def relevant(self, case: Case, metric: str) -> bool:
         raise NotImplementedError
 
+    def affected(self, case: Case, metric: str, names) -> set:
+        """Libraries whose result this cause changes (for choosing the best explanation)."""
+        return set(self.affects) & set(names) if self.affects is not None else set(names)
+
     def options(self, case: Case, metric: str) -> dict:
         return dict(self.opts)
 
@@ -743,6 +747,14 @@ DETECTORS: list[Detector] = [
 
 def notes_for(case: Case, metric: str) -> list[str]:
     """Observations worth showing even when they don't cause a mismatch."""
+    if case.task == "text":
+        from .text import notes
+
+        return notes(case, metric)
+    if case.task == "ranking":
+        from .ranking import notes
+
+        return notes(case, metric)
     notes = []
     if case.task == "segmentation":
         if "torchmetrics" in case.backends:

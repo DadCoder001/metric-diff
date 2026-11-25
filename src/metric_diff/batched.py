@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import backends as _backends
-from .core import Report, Result, _close, _final_inputs, backend_opts, compare, resolve_for, unsupported
+from .core import (Report, Result, _close, _final_inputs, backend_opts, compare, resolve_for,
+                   task_of, unsupported)
 from .detectors import Averaging
 from .inputs import Case, apply_pos_label, normalise_metric, to_numpy
 
@@ -125,6 +126,9 @@ def compare_batched(metric: str, batches, *, average: str | None = None,
         twice (e.g. DistributedSampler padding) or dropped (drop_last=True).
     """
     metric = normalise_metric(metric)
+    if task_of(metric) in ("text", "ranking"):
+        raise ValueError(f"compare_batched does not support {task_of(metric)} metrics yet; use compare() "
+                         f"on the whole {'corpus' if task_of(metric) == 'text' else 'set of queries'}")
     raw = _batches_to_arrays(batches)
     bks = resolve_for(metric, backends)
     dataset = compare(metric, np.concatenate([b[0] for b in raw]), np.concatenate([b[1] for b in raw]),

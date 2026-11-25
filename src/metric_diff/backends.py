@@ -93,7 +93,7 @@ _TORCH_NAMES = {
 }
 
 
-TASKS = ("classification", "regression", "segmentation")
+TASKS = ("classification", "regression", "segmentation")  # "text": opt-in per library
 
 
 def task_family(task: str) -> str:
@@ -138,6 +138,7 @@ class SklearnBackend(Backend):
     """
 
     name = "sklearn"
+    tasks = TASKS + ("ranking",)
     module = "sklearn"
 
     def compute(self, metric, task, y_true, y_pred, num_classes, opts):
@@ -272,6 +273,7 @@ class _TorchStateful:
 class TorchmetricsBackend(Backend):
     name = "torchmetrics"
     module = "torchmetrics"
+    tasks = TASKS + ("text", "ranking")
 
     def compute(self, metric, task, y_true, y_pred, num_classes, opts):
         if task == "regression":
@@ -321,7 +323,7 @@ class TorchmetricsBackend(Backend):
 class TorchevalBackend(Backend):
     name = "torcheval"
     module = "torcheval"
-    tasks = ("classification", "regression")
+    tasks = ("classification", "regression", "ranking")
 
     def compute(self, metric, task, y_true, y_pred, num_classes, opts):
         import torcheval.metrics.functional as F
@@ -542,6 +544,7 @@ class EvaluateBackend(Backend):
 
     name = "evaluate"
     module = "evaluate"
+    tasks = TASKS + ("text",)
 
     def unsupported(self, metric, task, opts):
         if metric == "average_precision":
@@ -618,6 +621,55 @@ class MonaiBackend(Backend):
         return "MONAI is compared on segmentation metrics only"
 
 
+class _TextOnly(Backend):
+    tasks = ("text",)
+
+    def unsupported(self, metric, task, opts):
+        return f"{self.name} is compared on text-generation metrics only"
+
+
+class PytrecEvalBackend(Backend):
+    """pytrec_eval, the Python binding of trec_eval (ranking metrics only)."""
+
+    name = "pytrec_eval"
+    module = "pytrec_eval"
+    tasks = ("ranking",)
+
+    def unsupported(self, metric, task, opts):
+        return "pytrec_eval is compared on ranking metrics only"
+
+    def version(self) -> str:
+        from importlib.metadata import PackageNotFoundError, version
+
+        for dist in ("pytrec_eval-terrier", "pytrec_eval"):
+            try:
+                return version(dist)
+            except PackageNotFoundError:
+                continue
+        return "?"
+
+
+class SacrebleuBackend(_TextOnly):
+    """sacrebleu, the reference implementation of BLEU and chrF (text metrics only)."""
+
+    name = "sacrebleu"
+    module = "sacrebleu"
+
+
+class NltkBackend(_TextOnly):
+    """nltk's corpus_bleu (text metrics only); text is split on whitespace, as most users do."""
+
+    name = "nltk"
+    module = "nltk"
+
+
+class RougeScoreBackend(_TextOnly):
+    """Google's rouge-score, the reference implementation of ROUGE (text metrics only)."""
+
+    name = "rouge_score"
+    module = "rouge_score"
+
+
 ALL_BACKENDS: dict[str, Callable[[], Backend]] = {
     "sklearn": SklearnBackend,
     "torchmetrics": TorchmetricsBackend,
@@ -625,7 +677,14 @@ ALL_BACKENDS: dict[str, Callable[[], Backend]] = {
     "keras": KerasBackend,
     "evaluate": EvaluateBackend,
     "monai": MonaiBackend,
+    "sacrebleu": SacrebleuBackend,
+    "nltk": NltkBackend,
+    "rouge_score": RougeScoreBackend,
+    "pytrec_eval": PytrecEvalBackend,
 }
+
+EXTRA = {"keras": "keras", "evaluate": "evaluate", "monai": "monai", "sacrebleu": "text",
+         "nltk": "text", "rouge_score": "text", "pytrec_eval": "ranking"}
 
 
 def resolve(names: list[str] | None) -> list[Backend]:
@@ -638,7 +697,7 @@ def resolve(names: list[str] | None) -> list[Backend]:
             raise ValueError(f"unknown backend {n!r}; choose from {', '.join(ALL_BACKENDS)}")
         b = ALL_BACKENDS[n]()
         if not b.available():
-            extra = n if n in ("keras", "evaluate", "monai") else "torch"
+            extra = EXTRA.get(n, "torch")
             raise ImportError(f"backend {n!r} is not installed (pip install 'metric-diff[{extra}]')")
         out.append(b)
     return out
@@ -667,4 +726,14 @@ def safe_compute(backend: Backend, metric: str, task: str, *rest) -> tuple[float
         from . import segmentation
 
         return safe_call(segmentation.compute, backend.name, metric, *rest)
+    if task == "text":
+        from . import text
+
+        y_true, y_pred, _num_classes, opts = rest
+        return safe_call(text.compute, backend.name, metric, y_true, y_pred, opts)
+    if task == "ranking":
+        from . import ranking
+
+        y_true, y_pred, _num_classes, opts = rest
+        return safe_call(ranking.compute, backend.name, metric, y_true, y_pred, opts)
     return safe_call(backend.compute, metric, task, *rest)

@@ -11,8 +11,8 @@ import numpy as np
 from . import backends as _backends
 from .detectors import DETECTORS, Detector, notes_for
 from .inputs import (LABEL_METRICS, REGRESSION_METRICS, SEGMENTATION_KEYS, SEGMENTATION_METRICS,
-                     SETTING_KEYS, Case, make_settings, normalise_metric, prepare, prepare_regression,
-                     prepare_segmentation)
+                     RETRIEVAL_KEYS, RETRIEVAL_METRICS, SETTING_KEYS, TEXT_KEYS, TEXT_METRICS, Case,
+                     make_settings, normalise_metric, prepare, prepare_regression, prepare_segmentation)
 
 
 @dataclass
@@ -96,7 +96,7 @@ def _status(results: dict[str, Result], rtol: float, atol: float) -> str:
 
 def _final_inputs(metric: str, case: Case, y_true, y_pred, num_classes: int | None = None):
     """Shape conversions every library needs (not a 'cause', just plumbing)."""
-    if case.task == "segmentation":
+    if case.task in ("segmentation", "text", "ranking"):
         return y_true, y_pred
     if metric not in LABEL_METRICS:
         if case.task == "multiclass" and y_pred.ndim == 1:
@@ -127,6 +127,14 @@ def unsupported(case: Case, metric: str, name: str, opts: dict) -> str | None:
         from . import segmentation
 
         return segmentation.unsupported(name, metric, opts, case.y_true.ndim)
+    if case.task == "text":
+        from . import text
+
+        return text.unsupported(name, metric, opts)
+    if case.task == "ranking":
+        from . import ranking
+
+        return ranking.unsupported(name, metric, opts)
     backend = _backends.ALL_BACKENDS.get(name)
     reason = backend().unsupported(metric, case.task, opts) if backend else None
     if reason:
@@ -168,6 +176,10 @@ def task_of(metric: str) -> str:
         return "regression"
     if metric in SEGMENTATION_METRICS:
         return "segmentation"
+    if metric in TEXT_METRICS:
+        return "text"
+    if metric in RETRIEVAL_METRICS:
+        return "ranking"
     return "classification"
 
 
@@ -176,19 +188,60 @@ def resolve_for(metric: str, names: list[str] | None):
     bks = _backends.resolve(names)
     if names is None:
         bks = [b for b in bks if task_of(metric) in b.tasks]
+        if task_of(metric) in ("text", "ranking"):
+            from .ranking import SUPPORTS as RANKING
+            from .text import SUPPORTS as TEXT
+
+            table = TEXT if task_of(metric) == "text" else RANKING
+            bks = [b for b in bks if metric in table.get(b.name, ())]
+        if not bks:
+            extra = {"text": "text", "ranking": "ranking"}.get(task_of(metric), "all")
+            raise ImportError(f"no installed library computes {metric}; "
+                              f"pip install 'metric-diff[{extra}]'")
     return bks
 
 
 def build_case(metric, y_true, y_pred, bks, *, average=None, threshold=None, pos_label=None,
                num_classes=None, zero_division=None, top_k=None, include_background=None,
-               aggregation=None, settings=None) -> Case:
+               aggregation=None, settings=None, **text_settings) -> Case:
     names = tuple(b.name for b in bks)
     for lib in settings or {}:
         if lib not in names:
             raise ValueError(f"settings given for {lib!r}, which is not being compared ({', '.join(names)})")
     s = make_settings(average, threshold, settings, explicit_classes=num_classes is not None,
                       zero_division=zero_division, top_k=top_k,
-                      include_background=include_background, aggregation=aggregation)
+                      include_background=include_background, aggregation=aggregation,
+                      **text_settings)
+    if metric in TEXT_METRICS:
+        from .text import METRIC_KEYS, prepare_text
+
+        other = {k for k in SETTING_KEYS if s.values(k)} - set(METRIC_KEYS[metric])
+        if other or pos_label is not None or num_classes is not None:
+            raise ValueError(f"{metric} takes {', '.join(METRIC_KEYS[metric])} only "
+                             f"(got {sorted(other) or ['pos_label/num_classes']})")
+        if s.values("aggregation") - {"corpus", "sentence"}:
+            raise ValueError("aggregation for text metrics is 'corpus' or 'sentence'")
+        return dataclasses.replace(prepare_text(y_true, y_pred), settings=s, backends=names)
+    if metric in RETRIEVAL_METRICS:
+        from .ranking import NEEDS_K, prepare_ranking
+
+        other = {k for k in SETTING_KEYS if s.values(k)} - set(RETRIEVAL_KEYS)
+        if other or pos_label is not None or num_classes is not None:
+            raise ValueError(f"{metric} takes top_k, empty_queries and adaptive_k only "
+                             f"(got {sorted(other) or ['pos_label/num_classes']})")
+        if metric in NEEDS_K and not s.values("top_k"):
+            raise ValueError(f"{metric} needs top_k (the cut-off k)")
+        if s.values("adaptive_k") and metric != "precision_at_k":
+            raise ValueError("adaptive_k applies to precision_at_k only")
+        return dataclasses.replace(prepare_ranking(y_true, y_pred), settings=s, backends=names)
+    ir_keys = {k for k in ("empty_queries", "adaptive_k") if s.values(k)}
+    if ir_keys:
+        raise ValueError(f"{sorted(ir_keys)} apply to ranking metrics only")
+    text_keys = {k for k in TEXT_KEYS if s.values(k)}
+    if text_keys:
+        raise ValueError(f"{sorted(text_keys)} apply to text metrics (bleu, chrf, rouge) only")
+    if s.values("aggregation") & {"corpus", "sentence"}:
+        raise ValueError("aggregation 'corpus'/'sentence' applies to text metrics (bleu, chrf) only")
     seg_keys = {k for k in SEGMENTATION_KEYS if s.values(k)}
     if metric in SEGMENTATION_METRICS:
         other = {k for k in SETTING_KEYS if s.values(k)} - set(SEGMENTATION_KEYS)
@@ -218,7 +271,10 @@ def build_case(metric, y_true, y_pred, bks, *, average=None, threshold=None, pos
 def compare(metric: str, y_true, y_pred, *, average: str | None = None,
             threshold: float | None = None, pos_label=None, num_classes: int | None = None,
             zero_division=None, top_k: int | None = None, include_background: bool | None = None,
-            aggregation: str | None = None,
+            aggregation: str | None = None, tokenize: str | None = None,
+            smooth: bool | None = None, lowercase: bool | None = None,
+            word_order: int | None = None, use_stemmer: bool | None = None,
+            empty_queries: str | None = None, adaptive_k: bool | None = None,
             settings: dict[str, dict] | None = None, backends: list[str] | None = None,
             rtol: float = 1e-4, atol: float = 1e-6) -> Report:
     """Compute ``metric`` with every installed library and explain any disagreement.
@@ -226,8 +282,14 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     Parameters
     ----------
     metric: classification: accuracy, precision, recall, f1, auroc, average_precision;
-        regression: r2, mae, mse, rmse, mape; segmentation: dice, iou (aliases accepted).
+        regression: r2, mae, mse, rmse, mape; segmentation: dice, iou; text generation: bleu,
+        chrf, rouge1, rouge2, rougeL, rougeLsum; ranking: ndcg, map, mrr, precision_at_k,
+        recall_at_k, hit_rate (aliases accepted).
         Segmentation inputs are integer label maps of shape (n_images, *spatial).
+        Text inputs: y_true = references (a string, or a list of strings, per sample),
+        y_pred = generated texts (one string per sample).
+        Ranking inputs: one row per query, y_true = relevance of each candidate (0 = not
+        relevant), y_pred = scores; a 2-D array, or a list of 1-D arrays of different lengths.
     y_true: classification: 1-D integer labels. Regression: 1-D values, or 2-D for multi-output.
     y_pred: classification: 1-D labels or binary scores, or 2-D (n_samples, n_classes)
         multiclass scores. Regression: same shape as y_true.
@@ -237,12 +299,21 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     pos_label: which label is the positive class (binary). Labels are mapped to {0, 1}.
     num_classes: total number of classes, if some never occur in the data.
     zero_division: 0, 1 or "nan": the value of precision/recall/F1 when it is 0/0.
-    top_k: top-k accuracy (multiclass scores only).
+    top_k: top-k accuracy (multiclass scores); ranking: the cut-off k (ndcg@k, map@k, ...).
+    empty_queries: ranking: score a query without relevant documents as "zero", "one", or "skip" it.
+    adaptive_k: precision_at_k: divide by the list length when a query has fewer than k candidates.
     include_background: segmentation: count class 0 in the average (default: each library's default, True).
-    aggregation: segmentation: "dataset" (pool all pixels) or "per_image" (score each image, then average).
+    aggregation: segmentation: "dataset" (pool all pixels) or "per_image" (score each image, then average);
+        bleu/chrf: "corpus" (pool n-gram counts) or "sentence" (mean of sentence scores).
+    tokenize: bleu: "13a", "whitespace", "intl", "char" or "zh" (sacrebleu's tokenizers).
+    smooth: bleu: smoothing on or off (each library's own method when on).
+    lowercase: bleu/chrf: compare lowercased text.
+    word_order: chrf: 0 for chrF, 2 for chrF++.
+    use_stemmer: rouge: Porter stemming.
     settings: per-library overrides, e.g. ``{"sklearn": {"average": "weighted"}}``, to
         reproduce code that calls each library differently.
-    backends: subset of ["sklearn", "torchmetrics", "torcheval", "keras"]; default = all installed.
+    backends: subset of the library names (sklearn, torchmetrics, torcheval, keras, evaluate, monai,
+        sacrebleu, nltk, rouge_score, pytrec_eval); default = every installed library that covers the metric.
     """
     metric = normalise_metric(metric)
     bks = resolve_for(metric, backends)
@@ -250,7 +321,9 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     case = build_case(metric, y_true, y_pred, bks, average=average, threshold=threshold,
                       pos_label=pos_label, num_classes=num_classes, zero_division=zero_division,
                       top_k=top_k, include_background=include_background, aggregation=aggregation,
-                      settings=settings)
+                      settings=settings, tokenize=tokenize, smooth=smooth, lowercase=lowercase,
+                      word_order=word_order, use_stemmer=use_stemmer, empty_queries=empty_queries,
+                      adaptive_k=adaptive_k)
 
     results = _run(bks, metric, case)
     status = _status(results, rtol, atol)
@@ -260,7 +333,7 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     if status != "mismatch":
         return report
 
-    relevant = [d for d in DETECTORS
+    relevant = [d for d in all_detectors()
                 if (d.requires is None or d.requires in names) and d.relevant(case, metric)]
     differing = _differing(results, rtol, atol)
     for size in range(1, len(relevant) + 1):
@@ -272,7 +345,7 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
         if fixes:
             # Several alignments can reproduce agreement (e.g. two causes that share a transform);
             # explain with the one whose causes best match the libraries that actually disagree.
-            combo, aligned = max(fixes, key=lambda f: _fit(f[0], differing, names))
+            combo, aligned = max(fixes, key=lambda f: _fit(f[0], differing, names, case, metric))
             report.confirmed = True
             report.aligned = aligned
             report.causes = [_cause(d, case, metric, names) for d in combo]
@@ -281,6 +354,13 @@ def compare(metric: str, y_true, y_pred, *, average: str | None = None,
     # Nothing reproduced agreement: list what looks suspicious, clearly marked as unconfirmed.
     report.causes = [_cause(d, case, metric, names) for d in relevant]
     return report
+
+
+def all_detectors() -> list[Detector]:
+    from .ranking import RANKING_DETECTORS
+    from .text import TEXT_DETECTORS
+
+    return DETECTORS + TEXT_DETECTORS + RANKING_DETECTORS
 
 
 def _differing(results: dict[str, Result], rtol: float, atol: float) -> set[str]:
@@ -300,10 +380,10 @@ def _differing(results: dict[str, Result], rtol: float, atol: float) -> set[str]
     return out
 
 
-def _fit(combo, differing: set[str], names) -> int:
+def _fit(combo, differing: set[str], names, case=None, metric=None) -> int:
     score = 0
     for d in combo:
-        affected = set(d.affects) & set(names) if d.affects is not None else set(names)
+        affected = d.affected(case, metric, names)
         score += len(affected & differing) - len(affected - differing)
     return score
 

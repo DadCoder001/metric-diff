@@ -2,6 +2,33 @@
 
 All notable changes are listed here. This project follows [semantic versioning](https://semver.org/); while the version starts with 0, minor releases may change behaviour.
 
+## Unreleased
+
+### Test-suite assertions
+- `metric_diff.testing.assert_metrics_agree()`: fails unless every installed library agrees (or differs only for causes you `allow`), optionally checks an `expected` value, and requires at least `min_libraries` libraries so a test can't pass because one isn't installed. Failures raise `MetricMismatch` (an `AssertionError`) with the full report.
+- `assert_batches_consistent()`: fails on per-batch averaging, duplicated or missing samples.
+- Reports now show each cause's key in brackets (`[threshold_tie]`), the name used by `allow`.
+
+### Text generation: BLEU, chrF, ROUGE
+- New libraries: sacrebleu, nltk (BLEU), rouge-score; torchmetrics and Hugging Face evaluate also compute text metrics. `pip install "metric-diff[text]"`.
+- Metrics `bleu`, `chrf`, `rouge1`, `rouge2`, `rougeL`, `rougeLsum`; one or several references per sample.
+- Settings `tokenize`, `smooth`, `lowercase`, `aggregation` ("corpus" / "sentence"), `word_order`, `use_stemmer`.
+- 10 detectors: 0-100 vs 0-1 scale, BLEU tokenisation (13a vs whitespace), smoothing (on by default in sacrebleu, a different method in each library), corpus vs sentence averaging, nltk's handling of texts shorter than 4 words, chrF vs chrF++ (torchmetrics defaults to chrF++), chrF averaging over n-gram orders (sacrebleu `eps_smoothing`), lowercasing, ROUGE stemming, ROUGE-Lsum sentence splitting (torchmetrics splits sentences, rouge-score and evaluate only on newlines). A note warns when non-Latin text would be dropped or mis-tokenised.
+- CLI: one text per line; repeat `--true` for several references.
+
+### Ranking and retrieval: NDCG, MAP, MRR, precision@k, recall@k, hit rate
+- New library: pytrec_eval (trec_eval); sklearn, torchmetrics and torcheval also compute ranking metrics. `pip install "metric-diff[ranking]"`.
+- Inputs: one row per query (relevance and scores), rows may differ in length; graded relevance for NDCG.
+- Settings `top_k`, `empty_queries` ("zero" / "skip" / "one"), `adaptive_k`.
+- 5 detectors: tied scores (each library orders them differently), torchmetrics ignoring candidates scored 0 or below in MAP/MRR/precision/recall (Lightning-AI/torchmetrics#3518), MAP@k denominators (trec_eval vs torchmetrics), queries without relevant documents, precision@k on short lists.
+- CLI: one query per line.
+
+### Conformance matrix
+- 15 new edge cases (45 in total): 7 text generation, 8 ranking.
+
+### Fixes
+- Attribution of causes now uses the libraries each setting actually changes, so the right cause is named when several alignments reproduce agreement.
+
 ## 0.1.0a1 (first public alpha)
 
 ### Compare libraries

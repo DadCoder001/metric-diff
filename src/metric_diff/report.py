@@ -53,7 +53,7 @@ def render(report: "Report") -> str:
 
     for i, c in enumerate(report.causes, 1):
         lines.append("")
-        lines.append(f"  {i}. {c.title}")
+        lines.append(f"  {i}. {c.title}  [{c.key}]")
         lines.append(_wrap(c.detail, "     "))
         lines.append(_wrap("fix: " + c.fix, "     "))
         if c.reference:
@@ -107,7 +107,7 @@ def render_batched(report) -> str:
         lines.append(f"PROBLEM: {n} issue{'s' if n > 1 else ''} with how the metric is aggregated")
     for i, f in enumerate(report.findings, 1):
         lines.append("")
-        lines.append(f"  {i}. {f.title}")
+        lines.append(f"  {i}. {f.title}  [{f.key}]")
         lines.append(_wrap(f.detail, "     "))
         lines.append(_wrap("fix: " + f.fix, "     "))
         if f.reference:
