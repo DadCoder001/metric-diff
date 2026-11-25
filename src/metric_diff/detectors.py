@@ -759,8 +759,12 @@ def notes_for(case: Case, metric: str) -> list[str]:
             notes.append("R2 needs at least 2 samples.")
         return notes
     if metric in LABEL_METRICS and case.pred_kind != "labels" and not case.settings.values("top_k"):
-        notes.append("sklearn has no threshold argument: metric-diff used `y_pred >= 0.5` (binary) "
-                     "or argmax (multiclass), as most users do.")
+        if case.task == "binary":
+            t = case.settings.value("sklearn", "threshold", 0.5)
+            notes.append(f"sklearn has no threshold argument: metric-diff used `y_pred >= {t}`, "
+                         "as most users do.")
+        else:
+            notes.append("sklearn needs labels: metric-diff used the argmax of the scores, as most users do.")
     if case.task == "multiclass":
         missing = sorted(set(range(case.num_classes)) - set(np.unique(case.y_true).tolist()))
         if missing:

@@ -6,6 +6,8 @@
 
 It also answers the other classic question: **is the number I logged per batch the number for my dataset?**
 
+**New here?** The [user guide](docs/USER_GUIDE.md) is organised by what you're seeing: *"my training-loop F1 doesn't match sklearn"*, *"all my metrics are the same number"*, *"my Dice differs from MONAI"*, *"will upgrading torchmetrics change my numbers?"* and eight more scenarios, each with a snippet to run.
+
 ```text
 $ metric-diff auroc --true labels.csv --pred logits.csv
 
