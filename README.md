@@ -1,7 +1,7 @@
 # metric-diff
 
 [![tests](https://github.com/DadCoder001/metric-diff/actions/workflows/tests.yml/badge.svg)](https://github.com/DadCoder001/metric-diff/actions/workflows/tests.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/DadCoder001/metric-diff/blob/main/LICENSE)
 ![status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)
 
 **Your F1 score is 0.75 in torchmetrics, 0.70 in torcheval, a vector in Keras and an error in sklearn. Which one is right, and why?**
@@ -10,7 +10,7 @@
 
 It also answers the other classic question: **is the number I logged per batch the number for my dataset?**
 
-**New here?** The [user guide](docs/USER_GUIDE.md) is organised by what you're seeing: *"my training-loop F1 doesn't match sklearn"*, *"all my metrics are the same number"*, *"my Dice differs from MONAI"*, *"will upgrading torchmetrics change my numbers?"* and eight more scenarios, each with a snippet to run.
+**New here?** The [user guide](https://github.com/DadCoder001/metric-diff/blob/main/docs/USER_GUIDE.md) is organised by what you're seeing: *"my training-loop F1 doesn't match sklearn"*, *"all my metrics are the same number"*, *"my Dice differs from MONAI"*, *"will upgrading torchmetrics change my numbers?"* and eight more scenarios, each with a snippet to run.
 
 ```text
 $ metric-diff auroc --true labels.csv --pred logits.csv
@@ -256,7 +256,7 @@ evaluate has no average precision, `zero_division` or top-k; those cases show it
 
 ## Tested on real model predictions
 
-Beyond the hand-made edge cases, metric-diff runs on real model predictions: logistic regression and ridge models trained on public datasets bundled with scikit-learn (breast_cancer, digits, wine, diabetes), evaluated on a 30% test split. Full tables: [benchmarks/RESULTS.md](benchmarks/RESULTS.md); reproduce with `python benchmarks/real_data.py` (no downloads, about a minute).
+Beyond the hand-made edge cases, metric-diff runs on real model predictions: logistic regression and ridge models trained on public datasets bundled with scikit-learn (breast_cancer, digits, wine, diabetes), evaluated on a 30% test split. Full tables: [benchmarks/RESULTS.md](https://github.com/DadCoder001/metric-diff/blob/main/benchmarks/RESULTS.md); reproduce with `python benchmarks/real_data.py` (no downloads, about a minute).
 
 What showed up on real data:
 
@@ -267,7 +267,7 @@ What showed up on real data:
 - torchmetrics' macro default for multiclass accuracy: 0.9721 vs 0.9722 on digits. Small, but a different number in a results table.
 - When the predictions are clean probabilities and settings are explicit, all five libraries agree to 4 decimals.
 
-And on pretrained Hugging Face models ([benchmarks/RESULTS_HF.md](benchmarks/RESULTS_HF.md); `python benchmarks/download_hf.py` fetches about 720 MB once, then `python benchmarks/hf_data.py` runs offline):
+And on pretrained Hugging Face models ([benchmarks/RESULTS_HF.md](https://github.com/DadCoder001/metric-diff/blob/main/benchmarks/RESULTS_HF.md); `python benchmarks/download_hf.py` fetches about 720 MB once, then `python benchmarks/hf_data.py` runs offline):
 
 - **DistilBERT on SST-2 (872 sentences):** Keras F1 **0.675 instead of 0.914**; Keras AUROC **0.959** on probabilities (its 200 fixed thresholds can't resolve confident predictions bunched near 0 and 1) and **0.911** on logits, vs **0.972** everywhere else; Keras PR-AUC 0.943 vs average precision 0.973. On the model's 2-column output, sklearn raises and wants `scores[:, 1]`.
 - **SegFormer on ADE20K (200 validation images, 150 classes):** the same predictions give **Dice 0.284** (all pixels pooled: sklearn), **0.388** (per image: torchmetrics) and **0.538** (MONAI's `ignore_empty=True` default); **IoU 0.209 / 0.335 / 0.464**. MONAI's default alone adds about 0.15 by ignoring false positives on images without the class.
@@ -300,8 +300,8 @@ Usually none is "wrong": the libraries answer slightly different questions. Pick
 
 Every known mismatch lives in `src/metric_diff/cases.py` (the matrix) and in `tests/` as a regression case linked to its upstream issue. Found a new one? [Open an issue](https://github.com/DadCoder001/metric-diff/issues/new/choose) with the `--json` output. Questions and ideas go to [Discussions](https://github.com/DadCoder001/metric-diff/discussions).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a detector or an edge case, and the [Code of Conduct](CODE_OF_CONDUCT.md). Changes are listed in the [changelog](CHANGELOG.md).
+See [CONTRIBUTING.md](https://github.com/DadCoder001/metric-diff/blob/main/CONTRIBUTING.md) for how to add a detector or an edge case, and the [Code of Conduct](https://github.com/DadCoder001/metric-diff/blob/main/CODE_OF_CONDUCT.md). Changes are listed in the [changelog](https://github.com/DadCoder001/metric-diff/blob/main/CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/DadCoder001/metric-diff/blob/main/LICENSE)
