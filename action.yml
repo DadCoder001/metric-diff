@@ -74,7 +74,7 @@ runs:
         FAIL: ${{ inputs.fail-on-drift }}
         ARTIFACT: ${{ inputs.artifact-name }}
       run: |
-        set -uo pipefail
+        set +e -uo pipefail   # GitHub runs bash with -e; exit codes are handled below
         args=(matrix --summary "$GITHUB_STEP_SUMMARY")
         if [ -n "$BACKENDS" ]; then args+=(--backends "$BACKENDS"); fi
         for c in $CASES; do args+=(--case "$c"); done
