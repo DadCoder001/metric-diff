@@ -150,6 +150,9 @@ def build_matrix_parser() -> argparse.ArgumentParser:
     ap.add_argument("--save", metavar="FILE", help="save this run as JSON (a baseline for later)")
     ap.add_argument("--baseline", metavar="FILE",
                     help="compare with a saved run; exit code 1 if any result changed")
+    ap.add_argument("--summary", metavar="FILE",
+                    help="append a Markdown summary (drift and the matrix) to FILE, "
+                         "e.g. $GITHUB_STEP_SUMMARY")
     ap.add_argument("--list", action="store_true", help="list the edge cases and exit")
     return ap
 
@@ -180,8 +183,15 @@ def matrix_main(argv: list[str]) -> int:
         print(text)
     if args.save:
         result.save(args.save)
-    if baseline is not None:
-        drift = result.diff(baseline)
+    drift = result.diff(baseline) if baseline is not None else None
+    if args.summary:
+        parts = [drift.to_markdown()] if drift is not None else []
+        table = result.to_markdown()
+        parts.append(table if drift is None else
+                     f"<details><summary>Full conformance matrix</summary>\n\n{table}\n\n</details>")
+        with open(args.summary, "a", encoding="utf-8") as f:
+            f.write("\n\n".join(parts) + "\n\n")
+    if drift is not None:
         print()
         print(drift.to_text())
         return 1 if drift.found else 0

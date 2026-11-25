@@ -62,6 +62,7 @@ class MatrixResult:
     python: str = ""
     metric_diff: str = __version__
     libraries: list[str] = field(default_factory=list)
+    system: str = ""  # operating system the run was made on (tie order can depend on it)
 
     # ------------------------------------------------------------ summaries
     def counts(self) -> dict[str, int]:
@@ -113,6 +114,7 @@ class MatrixResult:
             "metric_diff": self.metric_diff,
             "created": self.created,
             "python": self.python,
+            "system": self.system,
             "versions": dict(self.versions),
             "libraries": list(self.libraries),
             "cases": {
@@ -136,7 +138,7 @@ class MatrixResult:
                     c.get("confirmed", False), c.get("error"))
                 for cid, c in d["cases"].items()]
         return cls(d["versions"], rows, d.get("created", ""), d.get("python", ""),
-                   d.get("metric_diff", ""), d.get("libraries", []))
+                   d.get("metric_diff", ""), d.get("libraries", []), d.get("system", ""))
 
     @classmethod
     def load(cls, path: str | Path) -> "MatrixResult":
@@ -162,13 +164,23 @@ class Drift:
     changes: list[Change]
     new_cases: list[str]
     removed_cases: list[str]
+    system_change: tuple[str, str] | None = None  # (baseline OS, this run's OS) when they differ
 
     @property
     def found(self) -> bool:
         return bool(self.changes)
 
+    def _system_note(self) -> str | None:
+        if not self.system_change:
+            return None
+        a, b = self.system_change
+        return (f"note: the baseline was made on {a} and this run is on {b}; some libraries order tied "
+                f"scores differently per operating system, so keep one baseline per OS.")
+
     def to_text(self) -> str:
         out = []
+        if self._system_note():
+            out.append(self._system_note())
         if self.version_changes:
             out.append("library versions: " + ", ".join(
                 f"{k} {a or '(none)'} -> {b or '(none)'}" for k, (a, b) in self.version_changes.items()))
@@ -183,6 +195,30 @@ class Drift:
         if self.removed_cases:
             out.append("cases missing from this run: " + ", ".join(self.removed_cases))
         return "\n".join(out)
+
+
+    def to_markdown(self) -> str:
+        out = []
+        if self.changes:
+            out.append(f"### :x: Metric drift: {len(self.changes)} result(s) changed since the baseline")
+        else:
+            out.append("### :white_check_mark: No metric drift: every result matches the baseline")
+        out.append("")
+        if self._system_note():
+            out += ["> " + self._system_note()[len("note: "):], ""]
+        if self.version_changes:
+            out.append("Library versions: " + ", ".join(
+                f"{k} `{a or '(none)'}` → `{b or '(none)'}`" for k, (a, b) in self.version_changes.items()))
+            out.append("")
+        if self.changes:
+            out += ["| Case | Library | Baseline | Now | Change |", "|---|---|---|---|---|"]
+            out += [f"| `{c.case}` | {c.library} | {c.before} | {c.after} | {c.kind} |" for c in self.changes]
+            out.append("")
+        if self.new_cases:
+            out.append("New cases (not in the baseline): " + ", ".join(f"`{c}`" for c in self.new_cases))
+        if self.removed_cases:
+            out.append("Cases missing from this run: " + ", ".join(f"`{c}`" for c in self.removed_cases))
+        return "\n".join(out).rstrip()
 
 
 def _fmt(v: float | None) -> str:
@@ -232,8 +268,10 @@ def diff_matrices(old: MatrixResult, new: MatrixResult, rtol: float = 1e-4, atol
                 kind = ("now fails" if b.status == "error" else "now works" if b_val and a.status == "error"
                         else "support changed")
                 changes.append(Change(cid, lib, _describe(a), _describe(b), kind))
+    system = (old.system, new.system) if old.system and new.system and old.system != new.system else None
     return Drift(versions, changes,
-                 [c for c in new_rows if c not in old_rows], [c for c in old_rows if c not in new_rows])
+                 [c for c in new_rows if c not in old_rows], [c for c in old_rows if c not in new_rows],
+                 system)
 
 
 def _baseline_value(results) -> tuple[str | None, float | None]:
@@ -292,4 +330,4 @@ def run_matrix(*, backends: list[str] | None = None, cases: list[str] | None = N
         rows.append(Row(case.id, case.title, case.metric, case.reference, base_lib, cells,
                         [c.key for c in report.causes] if report.confirmed else [], report.confirmed))
     return MatrixResult(versions, rows, datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        platform.python_version(), __version__, available)
+                        platform.python_version(), __version__, available, platform.system())

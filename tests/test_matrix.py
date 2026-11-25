@@ -112,3 +112,39 @@ def test_cli_matrix_bad_baseline(tmp_path, capsys):
     bad = tmp_path / "bad.json"
     bad.write_text('{"format": 99}')
     assert main(["matrix", "--case", "reg-mse", "--baseline", str(bad)]) == 2
+
+
+def test_drift_markdown(result):
+    data = result.to_dict()
+    data["cases"]["bin-auroc-large-logits"]["cells"]["torchmetrics"]["value"] = 0.9286
+    data["versions"]["torchmetrics"] = "1.8.0"
+    md = result.diff(MatrixResult.from_dict(data)).to_markdown()
+    assert md.startswith("### :x: Metric drift: 1 result(s) changed")
+    assert "| `bin-auroc-large-logits` | torchmetrics | 0.9286 | 0.5000 | value changed |" in md
+    assert "torchmetrics `1.8.0` →" in md
+    assert result.diff(result).to_markdown().startswith("### :white_check_mark: No metric drift")
+
+
+def test_baseline_from_another_os(result):
+    assert result.system  # recorded on every run
+    data = result.to_dict()
+    data["system"] = "Plan9"
+    drift = result.diff(MatrixResult.from_dict(data))
+    assert drift.system_change == ("Plan9", result.system) and not drift.found
+    assert "one baseline per OS" in drift.to_text() and "one baseline per OS" in drift.to_markdown()
+    # baselines saved before the OS was recorded load fine and give no note
+    del data["system"]
+    old = MatrixResult.from_dict(data)
+    assert old.system == "" and result.diff(old).system_change is None
+
+
+def test_cli_matrix_summary(tmp_path):
+    base, summary = tmp_path / "base.json", tmp_path / "summary.md"
+    args = ["matrix", "--backends", "sklearn,torchmetrics", "--case", "reg-mse-clean", "--summary", str(summary)]
+    assert main(args + ["--save", str(base)]) == 0
+    assert summary.read_text(encoding="utf-8").startswith("**metric-diff conformance matrix**")
+    summary.write_text("existing\n", encoding="utf-8")
+    assert main(args + ["--baseline", str(base)]) == 0
+    text = summary.read_text(encoding="utf-8")
+    assert text.startswith("existing\n### :white_check_mark: No metric drift")  # appended, not replaced
+    assert "<details><summary>Full conformance matrix</summary>" in text

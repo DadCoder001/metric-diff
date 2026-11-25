@@ -267,13 +267,33 @@ seg-iou-default             0.6530    0.6308 x                 0.6530      0.653
 
 ### In CI
 
+The GitHub Action re-runs the matrix on the library versions your project installs and fails the job if any result changed:
+
 ```yaml
 # .github/workflows/metric-drift.yml
-- run: pip install "metric-diff[all]"
-- run: metric-diff matrix --baseline metric-baseline.json   # fails the job if any result changed
+name: metric drift
+on: [pull_request]   # e.g. a Dependabot or Renovate PR that bumps torchmetrics
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt   # your pinned library versions
+      - uses: DadCoder001/metric-diff@v0.1.0a3
+        with:
+          baseline: metric-baseline.json
 ```
 
-Commit `metric-baseline.json` (created once with `--save`); after an intended upgrade, review the drift and save a new baseline.
+- **First run:** there's no baseline yet, so the action saves one and uploads it as the `metric-baseline` artifact. Download it and commit it.
+- **Every run after that:** the job page gets a summary of what changed (library versions, and each result that changed value, started failing or started working) with the full matrix underneath.
+- **After an intended upgrade:** run with `update-baseline: true` and commit the new baseline.
+- **Options:** `extras` (default `all`; libraries you installed first keep their versions), `cases`, `backends`, `fail-on-drift: false` to only warn. The outputs `drift` and `baseline-created` can drive later steps.
+- **One baseline per OS:** some libraries order tied scores differently on Linux, macOS and Windows, so use a separate baseline per runner OS (`baseline: metric-baseline-${{ runner.os }}.json`). The report warns if the baseline came from another OS.
+
+Without GitHub Actions: `metric-diff matrix --save metric-baseline.json` once, then `metric-diff matrix --baseline metric-baseline.json` (exit code 1 on drift; `--summary FILE` appends a Markdown report).
 
 ## What it detects
 

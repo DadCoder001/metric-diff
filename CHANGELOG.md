@@ -2,6 +2,13 @@
 
 All notable changes are listed here. This project follows [semantic versioning](https://semver.org/); while the version starts with 0, minor releases may change behaviour.
 
+## Unreleased
+
+### GitHub Action
+- `uses: DadCoder001/metric-diff@<version>` runs the conformance matrix on the library versions your workflow installs and fails the job when a result changed since the committed baseline. On the first run it saves the baseline and uploads it as an artifact; `update-baseline: true` refreshes it. Inputs `baseline`, `extras`, `cases`, `backends`, `fail-on-drift`, `artifact-name`; outputs `drift`, `baseline-created`.
+- `metric-diff matrix --summary FILE` appends a Markdown drift report and the matrix to a file such as `$GITHUB_STEP_SUMMARY`.
+- Matrix runs record the operating system, and the drift report warns when the baseline came from a different OS (tie order can differ by platform). Older baseline files still load.
+
 ## 0.1.0a2 (2026-11-25)
 
 ### Test-suite assertions

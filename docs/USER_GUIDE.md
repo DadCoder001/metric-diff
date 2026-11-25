@@ -317,13 +317,29 @@ metric-diff matrix --save metric-baseline.json       # once, on the versions you
 metric-diff matrix --baseline metric-baseline.json   # in CI: exit code 1 if any result changed
 ```
 
+On GitHub, the metric-diff Action does this for you. Install your own pinned requirements first, so the matrix runs on the versions you actually use:
+
 ```yaml
-# .github/workflows/metric-drift.yml (step)
-- run: pip install "metric-diff[all]"
-- run: metric-diff matrix --baseline metric-baseline.json
+# .github/workflows/metric-drift.yml
+name: metric drift
+on: [pull_request]   # e.g. a Dependabot or Renovate PR that bumps torchmetrics
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt   # your pinned library versions
+      - uses: DadCoder001/metric-diff@v0.1.0a3
+        with:
+          baseline: metric-baseline.json
 ```
 
-The drift report lists library version changes and each cell that changed value, started failing or started working. After an intended upgrade, review it and save a new baseline.
+The first run has no baseline yet: it saves one and uploads it as the `metric-baseline` artifact for you to commit. After that, every run compares with it and writes the drift report to the job summary. The report lists library version changes and each cell that changed value, started failing or started working. After an intended upgrade, review it, run once with `update-baseline: true` and commit the new baseline.
+
+Keep one baseline per operating system (`metric-baseline-${{ runner.os }}.json` in a matrix job): some libraries order tied scores differently on Linux, macOS and Windows, and the report warns when the baseline came from another OS.
 
 ### 11. I'm writing a paper or report and need to document my metrics
 
@@ -468,7 +484,7 @@ Aliases work too: `roc_auc`, `f1_score`, `r2_score`, `mean_squared_error`, `jacc
 ```bash
 metric-diff <metric> --true FILE --pred FILE [settings flags] [--backends a,b] [--json]
 metric-diff <metric> --true FILE --pred FILE --batch-size N [--expected-n N]
-metric-diff matrix [--case TEXT] [--format text|markdown|json] [--output FILE] [--save FILE] [--baseline FILE] [--list]
+metric-diff matrix [--case TEXT] [--format text|markdown|json] [--output FILE] [--save FILE] [--baseline FILE] [--summary FILE] [--list]
 ```
 
 Files: `.csv`, `.txt` or `.npy` (`.npy` for 2-D/3-D masks). Text metrics: one text per line, `--true` repeated for several references. Ranking metrics: one query per line, values separated by commas or spaces. Settings flags: `--average`, `--threshold`, `--pos-label`, `--num-classes`, `--zero-division`, `--top-k`, `--include-background`, `--aggregation`, `--tokenize`, `--smooth`, `--lowercase`, `--word-order`, `--use-stemmer`, `--empty-queries`, `--adaptive-k`, `--set LIB.KEY=VALUE`.

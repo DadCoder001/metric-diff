@@ -1,0 +1,117 @@
+name: metric-diff drift check
+description: Fail CI when an ML library upgrade changes a metric result. Runs metric-diff's conformance matrix and compares it with a saved baseline.
+author: DadCoder001
+branding:
+  icon: activity
+  color: orange
+
+inputs:
+  baseline:
+    description: >
+      Path of the baseline JSON file. If it doesn't exist yet, this run is saved as the baseline
+      and uploaded as an artifact for you to commit. Results can differ between operating systems,
+      so keep one baseline per OS (e.g. metric-baseline-linux.json).
+    default: metric-baseline.json
+  extras:
+    description: >
+      metric-diff extras to install: "all" (every supported library), a list such as
+      "torch,text", or "" to use only the libraries already installed in this job.
+      Libraries you installed earlier keep their versions either way.
+    default: all
+  cases:
+    description: Only run cases whose id contains one of these space-separated strings (e.g. "bin- seg-"). Default all cases.
+    default: ""
+  backends:
+    description: Comma-separated libraries to compare (e.g. "sklearn,torchmetrics"). Default every installed one.
+    default: ""
+  update-baseline:
+    description: Set to "true" to save this run as the new baseline (uploaded as an artifact) instead of checking for drift.
+    default: "false"
+  fail-on-drift:
+    description: Set to "false" to report drift as a warning without failing the job.
+    default: "true"
+  artifact-name:
+    description: Name of the artifact a new baseline is uploaded as. Must be unique per job, e.g. include the OS in a matrix.
+    default: metric-baseline
+
+outputs:
+  drift:
+    description: '"true" if any result changed since the baseline, otherwise "false".'
+    value: ${{ steps.run.outputs.drift }}
+  baseline-created:
+    description: '"true" if this run saved a new baseline instead of checking.'
+    value: ${{ steps.run.outputs.baseline-created }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install metric-diff
+      shell: bash
+      env:
+        EXTRAS: ${{ inputs.extras }}
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip --quiet
+        if [ -n "$EXTRAS" ]; then
+          # PyPI's Linux torch wheels bundle CUDA (several GB); the CPU build is enough here.
+          if [ "$RUNNER_OS" = "Linux" ] && [[ "$EXTRAS" =~ all|torch|keras|monai ]] \
+             && ! python -c "import torch" 2>/dev/null; then
+            python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          fi
+          python -m pip install "${GITHUB_ACTION_PATH}[${EXTRAS}]"
+        else
+          python -m pip install "${GITHUB_ACTION_PATH}"
+        fi
+
+    - name: Run the conformance matrix
+      id: run
+      shell: bash
+      env:
+        BASELINE: ${{ inputs.baseline }}
+        CASES: ${{ inputs.cases }}
+        BACKENDS: ${{ inputs.backends }}
+        UPDATE: ${{ inputs.update-baseline }}
+        FAIL: ${{ inputs.fail-on-drift }}
+        ARTIFACT: ${{ inputs.artifact-name }}
+      run: |
+        set -uo pipefail
+        args=(matrix --summary "$GITHUB_STEP_SUMMARY")
+        if [ -n "$BACKENDS" ]; then args+=(--backends "$BACKENDS"); fi
+        for c in $CASES; do args+=(--case "$c"); done
+
+        if [ "$UPDATE" = "true" ] || [ ! -f "$BASELINE" ]; then
+          if [ "$UPDATE" != "true" ]; then
+            echo "::warning title=metric-diff::No baseline at $BASELINE, so this run was saved as the baseline. Download the '$ARTIFACT' artifact and commit it as $BASELINE."
+          fi
+          mkdir -p "$(dirname "$BASELINE")"
+          python -m metric_diff "${args[@]}" --save "$BASELINE"
+          code=$?
+          echo "baseline-created=true" >> "$GITHUB_OUTPUT"
+          echo "drift=false" >> "$GITHUB_OUTPUT"
+          exit $code
+        fi
+
+        python -m metric_diff "${args[@]}" --baseline "$BASELINE"
+        code=$?
+        echo "baseline-created=false" >> "$GITHUB_OUTPUT"
+        if [ $code -eq 1 ]; then
+          echo "drift=true" >> "$GITHUB_OUTPUT"
+          msg="Metric results changed since $BASELINE (details in the job summary). If the change is intended, run with update-baseline: true and commit the new baseline."
+          if [ "$FAIL" = "true" ]; then
+            echo "::error title=metric drift::$msg"
+            exit 1
+          fi
+          echo "::warning title=metric drift::$msg"
+        elif [ $code -ne 0 ]; then
+          exit $code
+        else
+          echo "drift=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload the new baseline
+      if: steps.run.outputs.baseline-created == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.baseline }}
+        if-no-files-found: error

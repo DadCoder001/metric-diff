@@ -1,0 +1,79 @@
+name: action
+
+# Runs the metric-diff GitHub Action (action.yml) the way users do: first run creates a
+# baseline, second run finds no drift, a tampered baseline is reported as drift.
+
+on:
+  push:
+    paths: ["action.yml", "src/**", ".github/workflows/action-test.yml"]
+  pull_request:
+    paths: ["action.yml", "src/**", ".github/workflows/action-test.yml"]
+  workflow_dispatch:
+
+jobs:
+  action:
+    name: ${{ matrix.os }} / extras "${{ matrix.extras }}"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, extras: all }
+          - { os: windows-latest, extras: torch }
+    env:
+      KERAS_BACKEND: torch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: First run creates the baseline
+        id: first
+        uses: ./
+        with:
+          baseline: ci/metric-baseline.json
+          extras: ${{ matrix.extras }}
+          cases: reg- bin-f1 mc-accuracy
+          artifact-name: metric-baseline-${{ runner.os }}
+
+      - name: Second run finds no drift
+        id: second
+        uses: ./
+        with:
+          baseline: ci/metric-baseline.json
+          extras: ${{ matrix.extras }}
+          cases: reg- bin-f1 mc-accuracy
+
+      - name: Change a value in the baseline
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import json
+          p = "ci/metric-baseline.json"
+          d = json.load(open(p))
+          cell = next(c for case in d["cases"].values() for c in case["cells"].values()
+                      if c.get("value") is not None)
+          cell["value"] += 0.1
+          json.dump(d, open(p, "w"))
+          EOF
+
+      - name: Third run reports the drift
+        id: third
+        uses: ./
+        with:
+          baseline: ci/metric-baseline.json
+          extras: ${{ matrix.extras }}
+          cases: reg- bin-f1 mc-accuracy
+          fail-on-drift: "false"
+
+      - name: Check the outputs
+        shell: bash
+        env:
+          FIRST: ${{ steps.first.outputs.baseline-created }}
+          SECOND: ${{ steps.second.outputs.drift }}
+          THIRD: ${{ steps.third.outputs.drift }}
+        run: |
+          echo "first created=$FIRST, second drift=$SECOND, third drift=$THIRD"
+          test "$FIRST" = true && test "$SECOND" = false && test "$THIRD" = true
