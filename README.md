@@ -199,7 +199,7 @@ compare("precision_at_k", relevance, scores, top_k=5)
 compare("mrr", relevance, scores, empty_queries="skip")   # queries without a relevant document
 ```
 
-On three queries with tied scores, MAP is 0.506 in sklearn, 0.678 in torchmetrics and 0.585 in trec_eval: each orders ties differently. With raw logits as scores, torchmetrics' MAP, MRR, precision and recall drop every candidate scored 0 or below ([torchmetrics#3518](https://github.com/Lightning-AI/torchmetrics/issues/3518)). metric-diff confirms both.
+On three queries with tied scores, MAP is 0.506 in sklearn, 0.585 in trec_eval and 0.678 in torchmetrics on Windows: each orders ties differently, and torchmetrics' order even changes by platform (0.585 on Linux, 0.706 on macOS). With raw logits as scores, torchmetrics' MAP, MRR, precision and recall drop every candidate scored 0 or below ([torchmetrics#3518](https://github.com/Lightning-AI/torchmetrics/issues/3518)). metric-diff confirms both.
 
 ### Command line
 
