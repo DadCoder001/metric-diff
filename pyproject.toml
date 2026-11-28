@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "metric-diff"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "Find out why ML metric libraries (scikit-learn, torchmetrics, torcheval, Keras, Hugging Face evaluate, MONAI, sacrebleu, nltk, rouge-score, trec_eval) disagree on the same metric, and how to fix it."
 readme = "README.md"
 license = "MIT"
